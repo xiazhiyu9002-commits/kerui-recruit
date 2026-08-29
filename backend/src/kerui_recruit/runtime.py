@@ -208,6 +208,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         embedding_provider=providers.embedding,
         ocr_provider=providers.ocr,
         search_index=index,
+        encryption_service=encryption_service,
     )
 
     async def parse_resume(payload: dict[str, Any]) -> str:

@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -41,6 +42,26 @@ class Candidate(IdMixin, Base):
         back_populates="candidate",
         cascade="all, delete-orphan",
     )
+    contact: Mapped[CandidateContact | None] = relationship(
+        back_populates="candidate",
+        cascade="all, delete-orphan",
+    )
+
+
+class CandidateContact(IdMixin, Base):
+    __tablename__ = "candidate_contact"
+
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    email_encrypted: Mapped[str | None] = mapped_column(Text)
+    phone_encrypted: Mapped[str | None] = mapped_column(Text)
+    email_confidence: Mapped[float | None] = mapped_column(Float)
+    phone_confidence: Mapped[float | None] = mapped_column(Float)
+    candidate: Mapped[Candidate] = relationship(back_populates="contact")
 
 
 class ResumeDocument(IdMixin, Base):

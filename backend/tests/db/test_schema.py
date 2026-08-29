@@ -9,6 +9,7 @@ from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import (
     Blob,
     Candidate,
+    CandidateContact,
     ResumeDocument,
     ResumeRevision,
     TaskRecord,
@@ -92,3 +93,28 @@ def test_task_defaults_are_durable_and_queryable(tmp_path: Path) -> None:
         assert loaded.status == "PENDING"
         assert loaded.progress == 0
         assert loaded.attempts == 0
+
+
+def test_candidate_contact_is_one_to_one_and_encrypted_fields_are_nullable(
+    tmp_path: Path,
+) -> None:
+    """Each candidate has at most one contact record with encrypted fields."""
+    with make_session(tmp_path / "recruit.sqlite3") as session:
+        candidate = Candidate(display_name="张三")
+        contact = CandidateContact(
+            candidate=candidate,
+            email_encrypted="cipher-email",
+            phone_encrypted="cipher-phone",
+            email_confidence=0.9,
+            phone_confidence=0.8,
+        )
+        session.add(candidate)
+        session.commit()
+
+        loaded = session.scalars(select(CandidateContact)).one()
+        assert loaded.candidate.display_name == "张三"
+        assert loaded.email_encrypted == "cipher-email"
+        assert loaded.phone_encrypted == "cipher-phone"
+        assert loaded.email_confidence == pytest.approx(0.9)
+        assert loaded.phone_confidence == pytest.approx(0.8)
+        assert loaded.candidate_id == candidate.id

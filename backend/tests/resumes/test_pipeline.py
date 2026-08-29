@@ -2,11 +2,13 @@ from pathlib import Path
 
 import pymupdf
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.migrate import migrate
-from kerui_recruit.db.models import Candidate, ResumeRevision
+from kerui_recruit.db.models import Candidate, CandidateContact, ResumeRevision
 from kerui_recruit.db.session import create_engine_for
+from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers.fakes import FakeEmbeddingProvider
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 from kerui_recruit.resumes.pipeline import ResumePipeline
@@ -53,6 +55,17 @@ def make_pdf_bytes() -> bytes:
 def make_blank_pdf_bytes() -> bytes:
     pdf = pymupdf.open()
     pdf.new_page()
+    content = pdf.tobytes()
+    pdf.close()
+    return content
+
+
+def make_pdf_bytes_with_contact() -> bytes:
+    pdf = pymupdf.open()
+    pdf.new_page().insert_text(
+        (72, 72),
+        "Python Finance Resume with five years\nEmail: zhang@example.com\nPhone: 13800138000",
+    )
     content = pdf.tobytes()
     pdf.close()
     return content
@@ -154,3 +167,43 @@ async def test_pipeline_writes_search_projection_before_marking_ready(tmp_path: 
     )
 
     assert hits[0].candidate_id == ingested.candidate_id
+
+
+@pytest.mark.asyncio
+async def test_pipeline_encrypts_contact_details(tmp_path: Path) -> None:
+    """Contact details must be stored encrypted, never as plain text."""
+    engine = create_engine_for(tmp_path / "db" / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    store = BlobStore(tmp_path / "blobs", tmp_path / "temp")
+    with factory() as session:
+        ingested = ResumeIngestService(session, store).ingest(
+            IngestResume(filename="张三.pdf", content=make_pdf_bytes_with_contact())
+        )
+    encryption = EncryptionService(key_path=str(tmp_path / "encryption.key"))
+    pipeline = ResumePipeline(
+        session_factory=factory,
+        blob_store=store,
+        parser=FixedResumeParser(),
+        embedding_provider=FakeEmbeddingProvider(dimension=16),
+        encryption_service=encryption,
+    )
+
+    result = await pipeline.run(ingested.revision_id)
+
+    assert result.status == "READY"
+    with Session(engine) as session:
+        contact = session.scalar(
+            select(CandidateContact).where(
+                CandidateContact.candidate_id == ingested.candidate_id
+            )
+        )
+        assert contact is not None
+        assert contact.email_encrypted is not None
+        assert contact.phone_encrypted is not None
+        assert contact.email_encrypted != "zhang@example.com"
+        assert contact.phone_encrypted != "13800138000"
+        assert encryption.decrypt(contact.email_encrypted) == "zhang@example.com"
+        assert encryption.decrypt(contact.phone_encrypted) == "13800138000"
+        assert contact.email_confidence == pytest.approx(0.9)
+        assert contact.phone_confidence == pytest.approx(0.9)

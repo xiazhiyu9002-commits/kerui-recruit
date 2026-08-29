@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.base import new_id
-from kerui_recruit.db.models import Candidate, ResumeRevision
+from kerui_recruit.db.models import Candidate, CandidateContact, ResumeRevision
+from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers.contracts import EmbeddingProvider, OCRProvider
-from kerui_recruit.resumes.extract import extract_text
+from kerui_recruit.resumes.extract import extract_contact, extract_text
 from kerui_recruit.resumes.normalize import normalize_resume
 from kerui_recruit.resumes.structured import NormalizedResume, ResumeParser
 from kerui_recruit.search.contracts import SearchChunk, SearchIndex
@@ -58,6 +60,7 @@ class ResumePipeline:
         embedding_provider: EmbeddingProvider,
         ocr_provider: OCRProvider | None = None,
         search_index: SearchIndex | None = None,
+        encryption_service: EncryptionService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.blob_store = blob_store
@@ -65,6 +68,7 @@ class ResumePipeline:
         self.embedding_provider = embedding_provider
         self.ocr_provider = ocr_provider
         self.search_index = search_index
+        self.encryption_service = encryption_service
 
     async def run(self, revision_id: str) -> PipelineResult:
         with self.session_factory() as session:
@@ -87,6 +91,7 @@ class ResumePipeline:
             )
         else:
             source_text = extracted.text
+        contact = extract_contact(source_text)
         parsed = await self.parser.parse_resume(source_text)
         normalized = normalize_resume(parsed)
         contents = self._build_chunk_contents(normalized)
@@ -122,6 +127,27 @@ class ResumePipeline:
             candidate.total_years = normalized.total_years
             candidate.highest_degree = normalized.highest_degree
             candidate.status = "AVAILABLE"
+            if self.encryption_service is not None and (contact.email or contact.phone):
+                existing = session.scalar(
+                    select(CandidateContact).where(
+                        CandidateContact.candidate_id == candidate_id
+                    )
+                )
+                if existing is None:
+                    existing = CandidateContact(candidate=candidate)
+                    session.add(existing)
+                existing.email_encrypted = (
+                    self.encryption_service.encrypt(contact.email)
+                    if contact.email
+                    else None
+                )
+                existing.phone_encrypted = (
+                    self.encryption_service.encrypt(contact.phone)
+                    if contact.phone
+                    else None
+                )
+                existing.email_confidence = 0.9 if contact.email else None
+                existing.phone_confidence = 0.9 if contact.phone else None
             revision.raw_text = source_text
             revision.parsed_data = normalized.model_dump(mode="json")
             revision.parse_version = "resume-schema-v1"
