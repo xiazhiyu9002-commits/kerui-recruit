@@ -76,3 +76,37 @@ def test_restore_snapshot(
         names = session.scalars(select(Candidate.display_name)).all()
         assert "刘备" in names
         assert "曹操" not in names
+
+
+def test_prune_keeps_daily_and_weekly(
+    tmp_path: Path,
+    engine: Engine,
+    session_factory: sessionmaker[Session],
+) -> None:
+    import os
+    import time
+
+    with session_factory() as session:
+        session.add(Candidate(display_name="张三"))
+        session.commit()
+
+    backup_dir = tmp_path / "backups"
+    service = BackupService(
+        session_factory=session_factory,
+        engine=engine,
+        database_path=tmp_path / "recruit.sqlite3",
+        backup_dir=backup_dir,
+    )
+
+    snapshots = [service.create_snapshot(label=f"s{i}") for i in range(8)]
+    base = time.time()
+    for index, snapshot in enumerate(snapshots):
+        # Spread each snapshot one week apart so they fall in distinct ISO weeks.
+        mtime = base - index * 7 * 24 * 3600
+        os.utime(snapshot, (mtime, mtime))
+
+    removed = service.prune(keep_daily=2, keep_weekly=2)
+
+    remaining = sorted(backup_dir.glob("backup_*.sqlite3"))
+    assert removed == 4
+    assert len(remaining) == 4
