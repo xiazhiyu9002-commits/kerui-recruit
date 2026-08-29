@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from kerui_recruit.db.base import Base, IdMixin
+from kerui_recruit.db.base import Base, IdMixin, utc_now
 
 
 class Candidate(IdMixin, Base):
@@ -446,3 +446,14 @@ class BdLead(IdMixin, Base):
     status: Mapped[str] = mapped_column(String(24), default="新线索", nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SchemaVersion(Base):
+    __tablename__ = "schema_version"
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )

@@ -12,6 +12,7 @@ from kerui_recruit.db.models import (
     CandidateContact,
     ResumeDocument,
     ResumeRevision,
+    SchemaVersion,
     TaskRecord,
 )
 from kerui_recruit.db.session import (
@@ -118,3 +119,25 @@ def test_candidate_contact_is_one_to_one_and_encrypted_fields_are_nullable(
         assert loaded.email_confidence == pytest.approx(0.9)
         assert loaded.phone_confidence == pytest.approx(0.8)
         assert loaded.candidate_id == candidate.id
+
+
+def test_migrate_records_schema_version(tmp_path: Path) -> None:
+    """The database must carry a schema version for future migrations."""
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+    migrate(engine)
+
+    with Session(engine) as session:
+        version = session.scalar(select(SchemaVersion))
+        assert version is not None
+        assert version.version == 1
+
+
+def test_migrate_rejects_newer_schema_version(tmp_path: Path) -> None:
+    """A database created by a newer app must not be opened by an older one."""
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+    migrate(engine)
+    with Session(engine) as session, session.begin():
+        session.add(SchemaVersion(version=99))
+
+    with pytest.raises(RuntimeError, match="高于当前支持"):
+        migrate(engine)
