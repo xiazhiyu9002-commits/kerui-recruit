@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pymupdf
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import SecretStr
+
+from kerui_recruit.core.settings import Settings
+from kerui_recruit.runtime import create_runtime_app
+
+# 脱敏简历样本（无真实个人信息），用于 spec 12.2.4 端到端验收。
+_SAMPLE_TEXT = "张三 本科 6年 Java 后端开发 金融风控 上海 Python 支付"
+
+
+@pytest.fixture
+def client(tmp_path: Path):
+    settings = Settings(
+        data_root=tmp_path / "data",
+        session_token=SecretStr("launch-token"),
+    )
+    app = create_runtime_app(settings)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def _headers() -> dict[str, str]:
+    return {"X-Kerui-Session": "launch-token"}
+
+
+def _pdf_bytes(text: str) -> bytes:
+    document = pymupdf.open()
+    document.new_page().insert_text((72, 72), text)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
+def _wait_task(client: TestClient, task_id: str, timeout: float = 20.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/tasks/{task_id}", headers=_headers())
+        if response.status_code == 200:
+            body = response.json()
+            if body["status"] in ("SUCCESS", "FAILED", "DEAD_LETTER"):
+                return body
+        time.sleep(0.2)
+    raise TimeoutError(f"task {task_id} did not finish")
+
+
+def test_desensitized_sample_end_to_end(client: TestClient) -> None:
+    pdf = _pdf_bytes(_SAMPLE_TEXT)
+
+    # 1. 解析：导入简历并等待后台任务解析完成
+    imported = client.post(
+        "/api/resumes/import",
+        files={"file": ("张三.pdf", pdf, "application/pdf")},
+        headers=_headers(),
+    )
+    assert imported.status_code == 202
+    first = imported.json()
+    assert _wait_task(client, first["task_id"])["status"] == "SUCCESS"
+
+    # 2. 去重：再次导入同一份原件，物理 Blob 复用
+    again = client.post(
+        "/api/resumes/import",
+        files={"file": ("张三.pdf", pdf, "application/pdf")},
+        headers=_headers(),
+    )
+    assert again.status_code == 202
+    assert again.json()["blob_id"] == first["blob_id"]
+    assert again.json()["candidate_id"] != first["candidate_id"]
+
+    # 3. 搜索：解析后的候选人可被检索
+    searched = client.post(
+        "/api/search/candidates",
+        json={"query": "Java 金融", "filters": {}, "limit": 20},
+        headers=_headers(),
+    )
+    assert searched.status_code == 200
+    assert any(
+        item["candidate_id"] == first["candidate_id"]
+        for item in searched.json()["items"]
+    )
+
+    # 4. 匹配：导入 JD 并匹配
+    jd = client.post(
+        "/api/jd/import",
+        json={"company": "某金融", "title": "Java 后端", "source_text": "Java 3年 本科 金融"},
+        headers=_headers(),
+    )
+    assert jd.status_code == 202
+    matched = client.post(
+        "/api/match/jd",
+        json={"revision_id": jd.json()["revision_id"], "limit": 20},
+        headers=_headers(),
+    )
+    assert matched.status_code == 200
+    run_id = matched.json()["run_id"]
+    assert run_id
+
+    # 5. 导出：匹配结果可导出为 Excel
+    exported = client.get(f"/api/match/run/{run_id}/export", headers=_headers())
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
