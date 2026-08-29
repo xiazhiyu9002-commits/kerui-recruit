@@ -5,6 +5,7 @@ from typing import AsyncContextManager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from kerui_recruit.api.auth import valid_session
@@ -117,5 +118,17 @@ def create_app(
         app.include_router(dashboard_router)
         app.include_router(settings_router)
         app.include_router(migration_router)
+
+    # Added last so CORS is outermost and answers preflight OPTIONS before the
+    # session-token guard. The sidecar binds loopback only and authenticates
+    # every request with a short-lived token; opening CORS lets the WebView
+    # (tauri:// or the vite dev origin) call it from a different origin.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     return app

@@ -16,6 +16,8 @@ desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/binaries/
+desktop/test-results/
+desktop/playwright-report/
 *.tsbuildinfo
 desktop/vite.config.js
 desktop/vite.config.d.ts
@@ -25,6 +27,7 @@ desktop/vite.config.d.ts
 .env.*
 !.env.example
 recruit_data/
+.e2e-data/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
