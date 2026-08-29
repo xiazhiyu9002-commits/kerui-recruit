@@ -15,6 +15,7 @@ dependencies = [
   "pydantic>=2.11,<3",
   "pymupdf>=1.26,<2",
   "python-docx>=1.2,<2",
+  "python-multipart>=0.0.20,<1",
   "sqlalchemy>=2.0.43,<3",
   "uuid6>=2025.0.1,<2027",
   "uvicorn>=0.35,<1",
