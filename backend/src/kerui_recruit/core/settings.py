@@ -21,9 +21,12 @@ class Settings(BaseModel):
     siliconflow_embedding_model: str = "BAAI/bge-m3"
     siliconflow_reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
-    # Optional web search provider for BD lead discovery.
+    # Optional web search provider for BD lead discovery. Tavily is preferred;
+    # SerpApi is a drop-in alternative.
     tavily_api_key: SecretStr | None = None
     tavily_base_url: str = "https://api.tavily.com"
+    serpapi_api_key: SecretStr | None = None
+    serpapi_base_url: str = "https://serpapi.com"
 
     # Optional agent mailbox for passive resume ingestion.
     imap_host: str | None = None
@@ -53,7 +56,7 @@ class Settings(BaseModel):
 
     @property
     def bd_search_enabled(self) -> bool:
-        return bool(self.tavily_api_key)
+        return bool(self.tavily_api_key or self.serpapi_api_key)
 
     @property
     def mail_enabled(self) -> bool:

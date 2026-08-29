@@ -35,7 +35,11 @@ from kerui_recruit.match.service import MatchService
 from kerui_recruit.migration.service import MigrationService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.providers.leads import DeepSeekLeadExtractor
-from kerui_recruit.providers.websearch import NullWebSearchProvider, TavilyWebSearchProvider
+from kerui_recruit.providers.websearch import (
+    NullWebSearchProvider,
+    SerpApiWebSearchProvider,
+    TavilyWebSearchProvider,
+)
 from kerui_recruit.reminders.mail_service import ReminderMailService
 from kerui_recruit.reminders.service import ReminderService
 from kerui_recruit.resumes.pipeline import ResumePipeline
@@ -103,14 +107,18 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     encryption_service = EncryptionService(
         key_path=str(settings.paths.config / "encryption.key"),
     )
-    web_search_provider = (
-        TavilyWebSearchProvider(
+    if settings.tavily_api_key:
+        web_search_provider = TavilyWebSearchProvider(
             api_key=settings.tavily_api_key.get_secret_value(),
             base_url=settings.tavily_base_url,
         )
-        if settings.bd_search_enabled
-        else NullWebSearchProvider()
-    )
+    elif settings.serpapi_api_key:
+        web_search_provider = SerpApiWebSearchProvider(
+            api_key=settings.serpapi_api_key.get_secret_value(),
+            base_url=settings.serpapi_base_url,
+        )
+    else:
+        web_search_provider = NullWebSearchProvider()
     lead_extractor = (
         DeepSeekLeadExtractor(
             api_key=settings.deepseek_api_key.get_secret_value(),

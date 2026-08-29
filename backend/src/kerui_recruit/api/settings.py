@@ -17,6 +17,8 @@ class UpdateSettingsRequest(BaseModel):
     siliconflow_reranker_model: str | None = None
     tavily_api_key: str | None = None
     tavily_base_url: str | None = None
+    serpapi_api_key: str | None = None
+    serpapi_base_url: str | None = None
     imap_host: str | None = None
     imap_account: str | None = None
     imap_auth_code: str | None = None

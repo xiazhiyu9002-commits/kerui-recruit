@@ -84,3 +84,50 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 )
             )
         return results
+
+
+class SerpApiWebSearchProvider(WebSearchProvider):
+    """SerpApi search adapter (Google engine) for BD lead discovery.
+
+    Drop-in alternative to Tavily, selected when a SerpApi key is configured.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://serpapi.com",
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self._client = client
+
+    def search(self, query: str, limit: int = 10) -> list[WebSearchResult]:
+        client = self._client or httpx.Client(timeout=40.0)
+        try:
+            response = client.get(
+                f"{self.base_url}/search.json",
+                params={
+                    "engine": "google",
+                    "q": query,
+                    "num": limit,
+                    "api_key": self.api_key,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        finally:
+            if self._client is None:
+                client.close()
+
+        results: list[WebSearchResult] = []
+        for item in payload.get("organic_results", []):
+            results.append(
+                WebSearchResult(
+                    title=item.get("title", ""),
+                    url=item.get("link", ""),
+                    snippet=item.get("snippet", ""),
+                    source="serpapi",
+                )
+            )
+        return results

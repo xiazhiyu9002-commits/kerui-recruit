@@ -140,6 +140,8 @@ export interface AppSettings {
   siliconflow_reranker_model?: string;
   tavily_api_key?: string;
   tavily_base_url?: string;
+  serpapi_api_key?: string;
+  serpapi_base_url?: string;
   imap_host?: string;
   imap_account?: string;
   imap_auth_code?: string;
@@ -1080,11 +1082,14 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <input value={settings.tavily_api_key ?? ""} onChange={(e) => setSettings({ ...settings, tavily_api_key: e.target.value })} placeholder="Tavily API Key" aria-label="Tavily API Key" />
               </div>
               <div className="jd-row">
+                <input value={settings.serpapi_api_key ?? ""} onChange={(e) => setSettings({ ...settings, serpapi_api_key: e.target.value })} placeholder="SerpApi API Key（Tavily 备选）" aria-label="SerpApi API Key" />
                 <input value={settings.imap_host ?? ""} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} placeholder="IMAP 主机" aria-label="IMAP 主机" />
-                <input value={settings.imap_account ?? ""} onChange={(e) => setSettings({ ...settings, imap_account: e.target.value })} placeholder="IMAP 账号" aria-label="IMAP 账号" />
               </div>
               <div className="jd-row">
+                <input value={settings.imap_account ?? ""} onChange={(e) => setSettings({ ...settings, imap_account: e.target.value })} placeholder="IMAP 账号" aria-label="IMAP 账号" />
                 <input value={settings.imap_auth_code ?? ""} onChange={(e) => setSettings({ ...settings, imap_auth_code: e.target.value })} placeholder="IMAP 授权码" aria-label="IMAP 授权码" />
+              </div>
+              <div className="jd-row">
                 <input value={settings.imap_whitelist ?? ""} onChange={(e) => setSettings({ ...settings, imap_whitelist: e.target.value })} placeholder="发件人白名单（逗号分隔）" aria-label="发件人白名单" />
               </div>
             </form>

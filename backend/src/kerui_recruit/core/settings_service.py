@@ -16,6 +16,8 @@ ALLOWED_FIELDS = frozenset(
         "siliconflow_reranker_model",
         "tavily_api_key",
         "tavily_base_url",
+        "serpapi_api_key",
+        "serpapi_base_url",
         "imap_host",
         "imap_account",
         "imap_auth_code",
@@ -34,6 +36,7 @@ _SENSITIVE_FIELDS = frozenset(
         "deepseek_api_key",
         "siliconflow_api_key",
         "tavily_api_key",
+        "serpapi_api_key",
         "imap_auth_code",
         "smtp_auth_code",
     }

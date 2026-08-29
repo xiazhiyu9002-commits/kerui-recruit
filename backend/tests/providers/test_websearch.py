@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from kerui_recruit.providers.websearch import TavilyWebSearchProvider
+from kerui_recruit.providers.websearch import SerpApiWebSearchProvider, TavilyWebSearchProvider
 
 
 class _FakeResponse:
@@ -91,3 +91,54 @@ def test_tavily_provider_handles_empty_results() -> None:
 
     provider = TavilyWebSearchProvider(api_key="test-key", client=EmptyClient())  # type: ignore[arg-type]
     assert provider.search("no results") == []
+
+
+class _SerpApiResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return {
+            "organic_results": [
+                {
+                    "title": "字节跳动科技有限公司 — Java 高级工程师",
+                    "link": "https://example.com/1",
+                    "snippet": "字节跳动科技有限公司招聘 Java 高级工程师...",
+                }
+            ]
+        }
+
+
+class _SerpApiClient:
+    def __init__(self) -> None:
+        self.captured_url: str | None = None
+        self.captured_params: dict | None = None
+
+    def get(self, url: str, *, params: dict) -> _SerpApiResponse:
+        self.captured_url = url
+        self.captured_params = params
+        return _SerpApiResponse()
+
+    def close(self) -> None:
+        return None
+
+
+def test_serpapi_provider_maps_results() -> None:
+    client = _SerpApiClient()
+    provider = SerpApiWebSearchProvider(api_key="serp-key", client=client)  # type: ignore[arg-type]
+
+    results = provider.search("Java 工程师 招聘", limit=5)
+
+    assert len(results) == 1
+    assert results[0].source == "serpapi"
+    assert results[0].title == "字节跳动科技有限公司 — Java 高级工程师"
+    assert results[0].url == "https://example.com/1"
+    assert results[0].snippet == "字节跳动科技有限公司招聘 Java 高级工程师..."
+
+    assert client.captured_url == "https://serpapi.com/search.json"
+    assert client.captured_params == {
+        "engine": "google",
+        "q": "Java 工程师 招聘",
+        "num": 5,
+        "api_key": "serp-key",
+    }
