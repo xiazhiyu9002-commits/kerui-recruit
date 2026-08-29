@@ -74,4 +74,6 @@ def test_record_run_persists_snapshot(session_factory: sessionmaker[Session]) ->
         result = session.scalars(select(MatchResult)).one()
         assert result.candidate_id == "cand-1"
         assert result.total_score is not None
+        assert result.reason is not None
+        assert "融合得分" in result.reason
         assert recorded.result_ids["cand-1"] == result.id

@@ -26,6 +26,7 @@ class MatchScore:
     candidate_id: str
     total: float
     breakdown: dict[str, float]
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +116,7 @@ class MatchService:
                 "skill_coverage": round(skill_score, 4),
                 "years": year_score,
             },
+            reason=_build_reason(revision, hit, matched, must_skills, total),
         )
 
     def record_run(self, *, revision_id: str, hits) -> RecordedRun:
@@ -138,6 +140,7 @@ class MatchService:
                     jd_revision_id=revision_id,
                     total_score=score.total,
                     score_breakdown=score.breakdown,
+                    reason=score.reason,
                     status="未处理",
                 )
                 session.add(result)
@@ -205,3 +208,22 @@ def _meets_years(revision: _JdContext, hit: SearchHit) -> bool:
     if revision.min_years is None:
         return True
     return (hit.total_years or 0) >= revision.min_years
+
+
+def _build_reason(
+    revision: _JdContext,
+    hit: SearchHit,
+    matched: list[str],
+    must_skills: list[str],
+    total: float,
+) -> str:
+    """Compose a deterministic, evidence-based explanation for a match."""
+    parts: list[str] = []
+    if revision.min_years is not None:
+        years = hit.total_years or 0
+        verdict = "满足" if years >= revision.min_years else "不满足"
+        parts.append(f"相关经验 {years:g} 年 {verdict} {revision.min_years:g} 年要求")
+    if must_skills:
+        parts.append(f"必备技能覆盖 {len(matched)}/{len(must_skills)}")
+    parts.append(f"融合得分 {total}")
+    return "；".join(parts)
