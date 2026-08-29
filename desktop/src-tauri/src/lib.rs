@@ -84,6 +84,69 @@ fn default_data_root() -> PathBuf {
     }
 }
 
+fn config_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .map(|dir| PathBuf::from(dir).join("KeRuiRecruit"))
+            .unwrap_or_else(|_| PathBuf::from(".").join("KeRuiRecruit"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/KeRuiRecruit"))
+            .unwrap_or_else(|_| PathBuf::from(".").join("KeRuiRecruit"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        PathBuf::from(".").join("KeRuiRecruit")
+    }
+}
+
+fn data_root_config_path() -> PathBuf {
+    config_dir().join("data_root.txt")
+}
+
+fn resolve_data_root() -> PathBuf {
+    if let Ok(content) = std::fs::read_to_string(data_root_config_path()) {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    default_data_root()
+}
+
+fn validate_data_root(path: &std::path::Path) -> Result<(), String> {
+    let text = path.to_string_lossy();
+    let lower = text.to_lowercase();
+
+    for marker in ["onedrive", "dropbox", "icloud", "google drive", "box"] {
+        if lower.contains(marker) {
+            return Err(format!("禁止使用云同步目录（{}）", marker));
+        }
+    }
+    if text.starts_with("\\\\") {
+        return Err("禁止使用网络盘".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(windows_dir) = std::env::var("WINDIR") {
+            let root = PathBuf::from(windows_dir);
+            if path.starts_with(&root) {
+                return Err("禁止使用系统目录".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn persist_data_root(path: &std::path::Path) -> std::io::Result<()> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(data_root_config_path(), path.to_string_lossy().as_bytes())
+}
+
 fn resolve_sidecar_binary(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(path) = std::env::var("KERUI_SIDECAR_BIN") {
         return PathBuf::from(path);
@@ -163,6 +226,14 @@ fn runtime_config(state: State<'_, RuntimeConfig>) -> RuntimeConfig {
     state.inner().clone()
 }
 
+#[tauri::command]
+fn set_data_root(path: String) -> Result<String, String> {
+    let target = PathBuf::from(path.trim());
+    validate_data_root(&target)?;
+    persist_data_root(&target).map_err(|error| error.to_string())?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let Some(icon) = app.default_window_icon() else {
         return Ok(());
@@ -199,7 +270,7 @@ pub fn run() {
             let arguments = sidecar_arguments(
                 parse_port(&config.api_base_url)?,
                 config.session_token.clone(),
-                default_data_root(),
+                resolve_data_root(),
             );
             let child = Command::new(&sidecar)
                 .args(&arguments)
@@ -217,7 +288,7 @@ pub fn run() {
             create_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_config])
+        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the window minimizes to the system tray instead of
@@ -254,7 +325,7 @@ fn parse_port(api_base_url: &str) -> io::Result<u16> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{RuntimeConfig, sidecar_arguments};
+    use super::{sidecar_arguments, validate_data_root, RuntimeConfig};
 
     #[test]
     fn runtime_config_uses_loopback_and_a_256_bit_launch_token() {
@@ -278,5 +349,22 @@ mod tests {
             "--token", &"a".repeat(64),
             "--data-root", "C:/Users/example/AppData/Local/KeRuiRecruit",
         ]);
+    }
+
+    #[test]
+    fn validate_data_root_rejects_cloud_sync_directories() {
+        assert!(validate_data_root(std::path::Path::new("C:\\Users\\me\\OneDrive\\data")).is_err());
+        assert!(validate_data_root(std::path::Path::new("/Users/me/Dropbox/data")).is_err());
+        assert!(validate_data_root(std::path::Path::new("/Users/me/iCloud/data")).is_err());
+    }
+
+    #[test]
+    fn validate_data_root_rejects_network_paths() {
+        assert!(validate_data_root(std::path::Path::new("\\\\server\\share\\data")).is_err());
+    }
+
+    #[test]
+    fn validate_data_root_accepts_local_directory() {
+        assert!(validate_data_root(std::path::Path::new("C:\\Users\\me\\KeRuiRecruit")).is_ok());
     }
 }
