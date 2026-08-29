@@ -1,0 +1,94 @@
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.models import (
+    Blob,
+    Candidate,
+    ResumeDocument,
+    ResumeRevision,
+    TaskRecord,
+)
+from kerui_recruit.db.session import (
+    UnsupportedSQLiteVersion,
+    assert_supported_sqlite_version,
+    create_engine_for,
+)
+
+
+def make_session(database: Path) -> Session:
+    engine = create_engine_for(database)
+    migrate(engine)
+    return Session(engine)
+
+
+def test_engine_enables_foreign_keys_wal_and_full_synchronous(tmp_path: Path) -> None:
+    """Dropping a SQLite guard could allow corrupt or orphaned local data."""
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+        assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one().lower() == "wal"
+        assert connection.exec_driver_sql("PRAGMA synchronous").scalar_one() == 2
+        assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 5_000
+
+
+def test_unsafe_sqlite_wal_version_is_rejected() -> None:
+    """A vulnerable embedded SQLite build must not reach production startup."""
+    with pytest.raises(UnsupportedSQLiteVersion) as error:
+        assert_supported_sqlite_version((3, 51, 2))
+
+    assert error.value.code == "E_SQLITE_VERSION_UNSAFE"
+    assert_supported_sqlite_version((3, 51, 3))
+
+
+def test_candidate_document_revision_and_blob_relationships(tmp_path: Path) -> None:
+    """Losing an ownership link would make a resume version unrecoverable."""
+    with make_session(tmp_path / "recruit.sqlite3") as session:
+        blob = Blob(
+            content_sha256="a" * 64,
+            suffix=".pdf",
+            size_bytes=128,
+            storage_path="aa/aa/" + "a" * 64 + ".pdf",
+        )
+        candidate = Candidate(display_name="张三", total_years=Decimal("5.0"))
+        document = ResumeDocument(candidate=candidate)
+        revision = ResumeRevision(
+            document=document,
+            blob=blob,
+            content_sha256=blob.content_sha256,
+            original_filename="张三简历.pdf",
+            status="PENDING",
+        )
+        session.add(candidate)
+        session.commit()
+
+        loaded = session.scalars(select(ResumeRevision)).one()
+        assert loaded.document.candidate.display_name == "张三"
+        assert loaded.blob.content_sha256 == "a" * 64
+        assert loaded.document.candidate.deleted_at is None
+        assert loaded.document.candidate.total_years == Decimal("5.0")
+
+
+def test_task_defaults_are_durable_and_queryable(tmp_path: Path) -> None:
+    """A task without a persisted initial state cannot recover after a crash."""
+    with make_session(tmp_path / "recruit.sqlite3") as session:
+        task = TaskRecord(
+            task_type="PARSE_RESUME",
+            queue_name="batch",
+            priority=10,
+            payload={"revision_id": "revision-1"},
+            idempotency_key="parse:revision-1:v1",
+        )
+        session.add(task)
+        session.commit()
+
+        loaded = session.get(TaskRecord, task.id)
+        assert loaded is not None
+        assert loaded.status == "PENDING"
+        assert loaded.progress == 0
+        assert loaded.attempts == 0
