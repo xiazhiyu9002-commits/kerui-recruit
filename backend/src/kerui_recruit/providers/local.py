@@ -4,6 +4,7 @@ import hashlib
 import math
 import re
 
+from kerui_recruit.jd.structured import ParsedJd
 from kerui_recruit.resumes.structured import ParsedResume
 
 
@@ -79,4 +80,47 @@ class LocalResumeParser:
             location=location,
             skills=skills,
             summary=compact[:1_000],
+        )
+
+
+class LocalJdParser:
+    """Conservative offline JD parser; hard requirements stay minimal."""
+
+    skill_terms = (
+        "Python", "Java", "JavaScript", "TypeScript", "Go", "Rust", "C++",
+        "React", "Vue", "SQL", "金融", "风控", "支付", "招聘", "算法", "大模型",
+    )
+    locations = ("北京", "上海", "深圳", "广州", "杭州", "成都")
+
+    async def parse_jd(self, text: str) -> ParsedJd:
+        compact = " ".join(text.split())
+        years_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:年|years?)", compact, re.I)
+        min_years = float(years_match.group(1)) if years_match else None
+        degree = None
+        for token, normalized in (
+            ("博士", "博士"), ("PhD", "博士"),
+            ("硕士", "硕士"), ("本科", "本科"), ("大专", "大专"),
+        ):
+            if token.casefold() in compact.casefold():
+                degree = normalized
+                break
+        location = next(
+            (item for item in self.locations if item.casefold() in compact.casefold()),
+            None,
+        )
+        skills = [
+            item for item in self.skill_terms if item.casefold() in compact.casefold()
+        ]
+        ai_category = None
+        if any(t in compact for t in ("大模型", "LLM", "算法", "机器学习", "深度学习")):
+            ai_category = "CORE_AI"
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "待识别")
+        return ParsedJd(
+            title=first_line[:80],
+            min_years=min_years,
+            highest_degree=degree,
+            location=location,
+            tech_direction=skills,
+            summary=compact[:500],
+            ai_category=ai_category,
         )

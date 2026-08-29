@@ -5,10 +5,12 @@ from dataclasses import dataclass
 import httpx
 
 from kerui_recruit.core.settings import Settings
+from kerui_recruit.jd.structured import JdParser
 from kerui_recruit.providers.contracts import EmbeddingProvider, RerankerProvider
-from kerui_recruit.providers.deepseek import DeepSeekResumeParser
+from kerui_recruit.providers.deepseek import DeepSeekJdParser, DeepSeekResumeParser
 from kerui_recruit.providers.local import (
     LocalHashEmbeddingProvider,
+    LocalJdParser,
     LocalKeywordReranker,
     LocalResumeParser,
 )
@@ -24,6 +26,7 @@ LOCAL_VECTOR_DIMENSION = 64
 @dataclass(slots=True)
 class ProviderBundle:
     parser: ResumeParser
+    jd_parser: JdParser
     embedding: EmbeddingProvider
     reranker: RerankerProvider
     vector_dimension: int
@@ -39,6 +42,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
     if not settings.llm_enabled and not settings.search_providers_enabled:
         return ProviderBundle(
             parser=LocalResumeParser(),
+            jd_parser=LocalJdParser(),
             embedding=LocalHashEmbeddingProvider(dimension=LOCAL_VECTOR_DIMENSION),
             reranker=LocalKeywordReranker(),
             vector_dimension=LOCAL_VECTOR_DIMENSION,
@@ -48,6 +52,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
     client = httpx.AsyncClient()
 
     parser: ResumeParser
+    jd_parser: JdParser
     if settings.llm_enabled:
         parser = DeepSeekResumeParser(
             api_key=settings.deepseek_api_key.get_secret_value(),
@@ -55,8 +60,15 @@ def build_providers(settings: Settings) -> ProviderBundle:
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
         )
+        jd_parser = DeepSeekJdParser(
+            api_key=settings.deepseek_api_key.get_secret_value(),
+            client=client,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+        )
     else:
         parser = LocalResumeParser()
+        jd_parser = LocalJdParser()
 
     if settings.search_providers_enabled:
         embedding = SiliconFlowEmbeddingProvider(
@@ -79,6 +91,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
 
     return ProviderBundle(
         parser=parser,
+        jd_parser=jd_parser,
         embedding=embedding,
         reranker=reranker,
         vector_dimension=vector_dimension,

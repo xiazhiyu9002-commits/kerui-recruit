@@ -139,3 +139,79 @@ class TaskEvent(IdMixin, Base):
     to_status: Mapped[str] = mapped_column(String(24), nullable=False)
     message: Mapped[str | None] = mapped_column(Text)
     task: Mapped[TaskRecord] = relationship(back_populates="events")
+
+
+class Jd(IdMixin, Base):
+    __tablename__ = "jd"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAFT','OPEN','PAUSED','FILLED','CANCELLED','ARCHIVED')",
+            name="ck_jd_status",
+        ),
+        Index("ix_jd_active", "deleted_at", "status"),
+    )
+
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    revisions: Mapped[list[JdRevision]] = relationship(
+        back_populates="jd",
+        cascade="all, delete-orphan",
+    )
+
+
+class JdRevision(IdMixin, Base):
+    __tablename__ = "jd_revision"
+    __table_args__ = (
+        CheckConstraint(
+            "ai_category IN ('CORE_AI','AI_RELATED','NON_AI') OR ai_category IS NULL",
+            name="ck_jd_revision_ai_category",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING','PROCESSING','READY','FAILED')",
+            name="ck_jd_revision_status",
+        ),
+        Index("ix_jd_revision_current", "jd_id", "is_current"),
+    )
+
+    jd_id: Mapped[str] = mapped_column(
+        ForeignKey("jd.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_text: Mapped[str | None] = mapped_column(Text)
+    parsed_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    ai_category: Mapped[str | None] = mapped_column(String(24))
+    highest_degree: Mapped[str | None] = mapped_column(String(32))
+    min_years: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
+    location: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    jd: Mapped[Jd] = relationship(back_populates="revisions")
+    requirements: Mapped[list[JdRequirement]] = relationship(
+        back_populates="revision",
+        cascade="all, delete-orphan",
+    )
+
+
+class JdRequirement(IdMixin, Base):
+    __tablename__ = "jd_requirement"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('MUST','PLUS','EXCLUDE')",
+            name="ck_jd_requirement_kind",
+        ),
+    )
+
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("jd_revision.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    revision: Mapped[JdRevision] = relationship(back_populates="requirements")
