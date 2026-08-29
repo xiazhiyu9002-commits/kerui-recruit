@@ -369,6 +369,10 @@ export class ApiClient implements RecruitmentApi {
     });
   }
 
+  async setDataRoot(path: string) {
+    return invoke<string>("set_data_root", { path });
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("X-Kerui-Session", this.sessionToken);

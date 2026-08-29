@@ -223,6 +223,7 @@ export interface RecruitmentApi {
   createReminder(input: { title: string; remind_at: string; note?: string }): Promise<ReminderItem>;
   dismissReminder(id: string): Promise<ReminderItem>;
   migrateData(targetRoot: string): Promise<MigrationReport>;
+  setDataRoot(path: string): Promise<string>;
   onboardingStatus(): Promise<OnboardingStatus>;
 }
 
@@ -308,6 +309,8 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   // 设置
   const [settings, setSettings] = useState<AppSettings>({});
+  const [dataRootInput, setDataRootInput] = useState("");
+  const [dataRootMessage, setDataRootMessage] = useState("");
 
   // 备份与恢复
   const [backups, setBackups] = useState<BackupSnapshot[]>([]);
@@ -637,6 +640,17 @@ export function App({ api }: { api: RecruitmentApi }) {
       setSettings(await api.updateSettings(settings));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "设置保存失败");
+    }
+  }
+
+  async function saveDataRoot() {
+    setError(null);
+    setDataRootMessage("");
+    try {
+      await api.setDataRoot(dataRootInput.trim());
+      setDataRootMessage("数据目录已保存，重启应用后生效");
+    } catch (caught) {
+      setDataRootMessage(caught instanceof Error ? caught.message : "数据目录保存失败");
     }
   }
 
@@ -1093,6 +1107,13 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <input value={settings.imap_whitelist ?? ""} onChange={(e) => setSettings({ ...settings, imap_whitelist: e.target.value })} placeholder="发件人白名单（逗号分隔）" aria-label="发件人白名单" />
               </div>
             </form>
+
+            <div className="section-heading" style={{ marginTop: 20 }}><h2>数据目录</h2></div>
+            <div className="jd-row" style={{ marginTop: 12 }}>
+              <input value={dataRootInput} onChange={(e) => setDataRootInput(e.target.value)} placeholder="数据目录绝对路径（留空使用默认）" aria-label="数据目录" />
+              <button type="button" className="import-button" onClick={() => void saveDataRoot()}>设置数据目录</button>
+            </div>
+            {dataRootMessage && <p className="muted">{dataRootMessage}</p>}
 
             <div className="section-heading" style={{ marginTop: 20 }}><h2>健康检测台</h2><button className="import-button" onClick={() => void checkHealth()}>运行检测</button></div>
             {health && (
