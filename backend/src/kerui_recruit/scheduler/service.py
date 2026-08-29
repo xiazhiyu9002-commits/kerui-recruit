@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from kerui_recruit.backup.service import BackupService
 from kerui_recruit.db.models import Candidate, CandidateJobCase, Jd, JdRevision
 from kerui_recruit.mail.ingest import MailIngestService
 from kerui_recruit.match.service import MatchService
@@ -39,12 +41,14 @@ class SchedulerService:
         reminder_service: ReminderService | None,
         mail_ingest_service: MailIngestService | None = None,
         reminder_mail_service: ReminderMailService | None = None,
+        backup_service: BackupService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
         self.reminder_service = reminder_service
         self.mail_ingest_service = mail_ingest_service
         self.reminder_mail_service = reminder_mail_service
+        self.backup_service = backup_service
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20
@@ -126,6 +130,21 @@ class SchedulerService:
             return []
         return self.reminder_mail_service.send_due_reminders()
 
+    def backup_tick(self) -> None:
+        """Create a daily snapshot (once per UTC day) and apply retention."""
+        if self.backup_service is None:
+            return
+        today = datetime.now(timezone.utc).date()
+        has_today = any(
+            datetime.fromtimestamp(
+                snapshot.stat().st_mtime, tz=timezone.utc
+            ).date() == today
+            for snapshot in self.backup_service.backup_dir.glob("backup_*.sqlite3")
+        )
+        if not has_today:
+            self.backup_service.create_snapshot(label="daily")
+        self.backup_service.prune()
+
     async def run_forever(self, *, interval_seconds: int = 300) -> None:
         while True:
             try:
@@ -139,6 +158,10 @@ class SchedulerService:
                 pass
             try:
                 self.send_reminder_mail()
+            except Exception:
+                pass
+            try:
+                self.backup_tick()
             except Exception:
                 pass
             await asyncio.sleep(interval_seconds)
