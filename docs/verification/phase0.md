@@ -48,3 +48,20 @@ Rust 壳层通过优先级 `KERUI_SIDECAR_BIN` 环境变量 → 与桌面可执�
 > 注：PyInstaller one-file 会 fork 出 bootloader + 真实解释器两个进程，直接 `child.kill()` 只终止 bootloader、留下孤儿服务进程。已在 `terminate_sidecar` 中通过 Windows `taskkill /T` 终止整棵进程树修复。
 
 Playwright E2E（`npm run test:e2e`）需打包后的 Tauri 壳层与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环与壳层启动/退出冒烟，未在无头环境跑浏览器端 E2E。
+
+## 真实模型 Provider 接入
+
+按 spec 第 9 章 Provider 适配层接入真实 API，通过环境变量注入、不落明文仓库：
+
+- **LLM（DeepSeek）**：`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL`（默认 `deepseek-v4-flash`，`base_url=https://api.deepseek.com`）。
+- **Embedding + Reranker（硅基流动）**：`SILICONFLOW_API_KEY` / `SILICONFLOW_BASE_URL` / `SILICONFLOW_EMBEDDING_MODEL`（`BAAI/bge-m3`）/ `SILICONFLOW_RERANKER_MODEL`（`BAAI/bge-reranker-v2-m3`）。
+
+机制：`providers/factory.py` 按 `Settings` 决定本地（离线，64 维哈希向量）或真实（1024 维 bge-m3）Provider；`sidecar.py` 从环境变量读取密钥。搜索投影维度随 embedding 选择自动切换。
+
+已验证（真实 API key、干净数据目录、单进程闭环）：
+
+- DeepSeek `deepseek-v4-flash` 结构化解析简历 → `revision READY`；
+- 硅基流动 `BAAI/bge-m3` 生成 1024 维向量、`BAAI/bge-reranker-v2-m3` 重排；
+- 导入后 `POST /api/search/candidates` 命中新候选人，`task_status=SUCCESS`。
+
+> 切换真实/本地 embedding 会改变向量维度（64 ↔ 1024），属检索版本变化；旧索引不兼容，需用新的数据目录或重建索引。

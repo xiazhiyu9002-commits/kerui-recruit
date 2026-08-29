@@ -14,11 +14,7 @@ from kerui_recruit.core.settings import Settings
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.main import create_app
-from kerui_recruit.providers.local import (
-    LocalHashEmbeddingProvider,
-    LocalKeywordReranker,
-    LocalResumeParser,
-)
+from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
 from kerui_recruit.search.service import HybridSearchService
@@ -32,6 +28,7 @@ class RuntimeComponents:
     services: AppServices
     pipeline: ResumePipeline
     worker: TaskWorker
+    providers: ProviderBundle
 
 
 def build_runtime(settings: Settings) -> RuntimeComponents:
@@ -40,8 +37,12 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     migrate(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     blob_store = BlobStore(settings.paths.blobs, settings.paths.temp)
-    embedding = LocalHashEmbeddingProvider(dimension=64)
-    index = LanceDBSearchIndex(settings.paths.search, vector_dimension=64)
+
+    providers = build_providers(settings)
+    index = LanceDBSearchIndex(
+        settings.paths.search,
+        vector_dimension=providers.vector_dimension,
+    )
     repository = TaskRepository(factory)
     services = AppServices(
         settings=settings,
@@ -50,15 +51,15 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         task_repository=repository,
         search_service=HybridSearchService(
             index=index,
-            embedding_provider=embedding,
-            reranker_provider=LocalKeywordReranker(),
+            embedding_provider=providers.embedding,
+            reranker_provider=providers.reranker,
         ),
     )
     pipeline = ResumePipeline(
         session_factory=factory,
         blob_store=blob_store,
-        parser=LocalResumeParser(),
-        embedding_provider=embedding,
+        parser=providers.parser,
+        embedding_provider=providers.embedding,
         search_index=index,
     )
 
@@ -72,7 +73,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         queues=("interactive", "batch"),
         handlers={"PARSE_RESUME": parse_resume},
     )
-    return RuntimeComponents(services=services, pipeline=pipeline, worker=worker)
+    return RuntimeComponents(services=services, pipeline=pipeline, worker=worker, providers=providers)
 
 
 def create_runtime_app(settings: Settings) -> FastAPI:
@@ -88,6 +89,8 @@ def create_runtime_app(settings: Settings) -> FastAPI:
             worker_task.cancel()
             with suppress(asyncio.CancelledError):
                 await worker_task
+            if runtime.providers.http_client is not None:
+                await runtime.providers.http_client.aclose()
 
     return create_app(runtime.services, lifespan=lifespan)
 
