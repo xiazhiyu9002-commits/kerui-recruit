@@ -119,3 +119,32 @@ def test_retry_dead_letter_task(tmp_path: Path) -> None:
         task = session.get(TaskRecord, task_id)
         assert task.status == "QUEUED"
         assert task.error_code is None
+
+
+def test_pause_and_resume_queued_task(tmp_path: Path) -> None:
+    """A paused task must be skipped by workers until explicitly resumed."""
+    repo = make_repo(tmp_path)
+    task_id = repo.enqueue(
+        TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": "one"}, "parse:one")
+    )
+
+    repo.pause(task_id)
+    assert repo.claim("worker-1", ("batch",)) is None
+
+    repo.resume(task_id)
+    claimed = repo.claim("worker-1", ("batch",))
+    assert claimed is not None and claimed.id == task_id
+
+
+def test_list_returns_tasks_newest_first(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    first = repo.enqueue(
+        TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": "one"}, "parse:one")
+    )
+    second = repo.enqueue(
+        TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": "two"}, "parse:two")
+    )
+
+    tasks = repo.list()
+
+    assert [task.id for task in tasks] == [second, first]

@@ -26,6 +26,13 @@ class TaskResponse(BaseModel):
     updated_at: datetime
 
 
+@router.get("", response_model=list[TaskResponse])
+def list_tasks(request: Request) -> list[TaskResponse]:
+    services: AppServices = request.app.state.services
+    tasks = services.task_repository.list()
+    return [TaskResponse.model_validate(task, from_attributes=True) for task in tasks]
+
+
 @router.get("/{task_id}", response_model=TaskResponse)
 def get_task(task_id: str, request: Request) -> TaskResponse:
     services: AppServices = request.app.state.services
@@ -52,6 +59,28 @@ def retry_task(task_id: str, request: Request) -> TaskResponse:
     services: AppServices = request.app.state.services
     try:
         services.task_repository.retry(task_id)
+    except LookupError:
+        raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
+    with services.session_factory() as session:
+        return TaskResponse.model_validate(session.get(TaskRecord, task_id), from_attributes=True)
+
+
+@router.post("/{task_id}/pause", response_model=TaskResponse)
+def pause_task(task_id: str, request: Request) -> TaskResponse:
+    services: AppServices = request.app.state.services
+    try:
+        services.task_repository.pause(task_id)
+    except LookupError:
+        raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
+    with services.session_factory() as session:
+        return TaskResponse.model_validate(session.get(TaskRecord, task_id), from_attributes=True)
+
+
+@router.post("/{task_id}/resume", response_model=TaskResponse)
+def resume_task(task_id: str, request: Request) -> TaskResponse:
+    services: AppServices = request.app.state.services
+    try:
+        services.task_repository.resume(task_id)
     except LookupError:
         raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
     with services.session_factory() as session:

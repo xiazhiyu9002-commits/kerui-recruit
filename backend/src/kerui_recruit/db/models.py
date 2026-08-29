@@ -121,7 +121,7 @@ class TaskRecord(IdMixin, Base):
     __tablename__ = "task"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('PENDING','QUEUED','RUNNING','RETRY_WAIT','SUCCESS','FAILED','CANCELLED','DEAD_LETTER')",
+            "status IN ('PENDING','QUEUED','RUNNING','RETRY_WAIT','SUCCESS','FAILED','CANCELLED','DEAD_LETTER','PAUSED')",
             name="ck_task_status",
         ),
         UniqueConstraint("idempotency_key", name="uq_task_idempotency_key"),

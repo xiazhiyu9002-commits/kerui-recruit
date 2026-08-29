@@ -228,6 +228,40 @@ class TaskRepository:
             task.next_retry_at = None
             task.events.append(TaskEvent(from_status=previous, to_status="QUEUED"))
 
+    def pause(self, task_id: str) -> None:
+        """Pause a queued task so the worker skips it until resumed."""
+        with self.session_factory() as session, session.begin():
+            task = session.get(TaskRecord, task_id)
+            if task is None:
+                raise LookupError(f"Task not found: {task_id}")
+            if task.status not in ("PENDING", "QUEUED", "RETRY_WAIT"):
+                return
+            previous = task.status
+            task.status = "PAUSED"
+            task.next_retry_at = None
+            task.events.append(TaskEvent(from_status=previous, to_status="PAUSED"))
+
+    def resume(self, task_id: str) -> None:
+        """Requeue a paused task."""
+        with self.session_factory() as session, session.begin():
+            task = session.get(TaskRecord, task_id)
+            if task is None:
+                raise LookupError(f"Task not found: {task_id}")
+            if task.status != "PAUSED":
+                return
+            task.status = "QUEUED"
+            task.events.append(TaskEvent(from_status="PAUSED", to_status="QUEUED"))
+
+    def list(self, *, limit: int = 100) -> list[TaskRecord]:
+        with self.session_factory() as session:
+            return list(
+                session.scalars(
+                    select(TaskRecord)
+                    .order_by(TaskRecord.created_at.desc())
+                    .limit(limit)
+                ).all()
+            )
+
     @staticmethod
     def _owned_running_task(
         session: Session,
