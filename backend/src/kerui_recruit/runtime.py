@@ -34,6 +34,7 @@ from kerui_recruit.mapping.service import MappingService
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.migration.service import MigrationService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
+from kerui_recruit.providers.connectivity import ProviderConnectivityService
 from kerui_recruit.providers.leads import DeepSeekLeadExtractor
 from kerui_recruit.providers.websearch import (
     NullWebSearchProvider,
@@ -208,6 +209,11 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         scheduler_service=scheduler_service,
         settings_service=settings_service,
         migration_service=migration_service,
+        provider_connectivity=ProviderConnectivityService(
+            settings=settings,
+            providers=providers,
+            web_search=web_search_provider,
+        ),
     )
     pipeline = ResumePipeline(
         session_factory=factory,

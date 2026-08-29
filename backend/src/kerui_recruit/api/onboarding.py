@@ -20,3 +20,13 @@ def onboarding_status(request: Request) -> dict:
         "smtp_enabled": settings.smtp_enabled,
         "health": HealthService(services).check(),
     }
+
+
+@router.post("/test-providers")
+async def test_providers(request: Request) -> list[dict]:
+    """Probe each configured provider with a minimal call."""
+    services: AppServices = request.app.state.services
+    if services.provider_connectivity is None:
+        return []
+    checks = await services.provider_connectivity.check()
+    return [{"name": c.name, "ok": c.ok, "message": c.message} for c in checks]
