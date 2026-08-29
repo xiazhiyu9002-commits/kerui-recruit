@@ -30,4 +30,13 @@ Phase 0 全部 11 个任务均已实现，覆盖：SQLite 事实库、内容寻�
 
 ## 桌面壳交付说明
 
-Rust 壳层实现了随机回环端口选择、256 位启动令牌生成、sidecar 启动与 `/health/ready` 等待，以及应用退出时终止 sidecar。sidecar 打包（PyInstaller 产物 `kerui-recruit-sidecar[.exe]`）与 Playwright E2E 需在打包流水线中完成——本地未安装打包工具链，未在本机验证完整 GUI 启动。
+Rust 壳层实现了随机回环端口选择、256 位启动令牌生成、sidecar 启动与 `/health/ready` 等待，以及应用退出时终止 sidecar。
+
+sidecar 打包通过 PyInstaller spec（`backend/packaging/kerui_recruit.spec`）与 `backend/packaging/build_sidecar.ps1` 完成，产物为 `dist/kerui-recruit-sidecar.exe`。已在本机（Windows 11 x64）完成验证：
+
+- 打包产物启动后 `/health/ready` 返回 `200 {"status":"ready"}`；
+- 通过打包产物走真实 HTTP 闭环：`POST /api/resumes/import` 返回 `202` 及 candidate/revision/task id，随后 `POST /api/search/candidates` 命中该候选人（`bm25` + `vector` 双通道）。
+
+Rust 壳层通过优先级 `KERUI_SIDECAR_BIN` 环境变量 → 与桌面可执行文件同目录的 `kerui-recruit-sidecar[.exe]` 定位打包产物。macOS arm64 构建需在对应平台执行同一 spec，不在 Windows 交叉打包。
+
+Playwright E2E（`npm run test:e2e`）需打包后的 Tauri 壳层与 sidecar 同机运行，本机仅完成 sidecar 层闭环验证，未启动完整 GUI。
