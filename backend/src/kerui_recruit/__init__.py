@@ -1,2 +1,1 @@
 """KeRui Recruit local backend."""
-

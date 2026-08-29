@@ -26,4 +26,3 @@ packages = ["src/kerui_recruit"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-
