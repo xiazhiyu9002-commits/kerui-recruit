@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -11,17 +10,8 @@ from kerui_recruit.providers.contracts import EmbeddingProvider, OCRProvider
 from kerui_recruit.resumes.extract import extract_text
 from kerui_recruit.resumes.normalize import normalize_resume
 from kerui_recruit.resumes.structured import NormalizedResume, ResumeParser
+from kerui_recruit.search.contracts import SearchChunk, SearchIndex
 from kerui_recruit.storage.blobs import BlobStore
-
-
-@dataclass(frozen=True, slots=True)
-class EmbeddedSearchChunk:
-    id: str
-    candidate_id: str
-    revision_id: str
-    content: str
-    vector: tuple[float, ...]
-    filters: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +19,7 @@ class PipelineResult:
     candidate_id: str
     revision_id: str
     status: str
-    chunks: tuple[EmbeddedSearchChunk, ...]
+    chunks: tuple[SearchChunk, ...]
 
 
 class ResumePipeline:
@@ -41,12 +31,14 @@ class ResumePipeline:
         parser: ResumeParser,
         embedding_provider: EmbeddingProvider,
         ocr_provider: OCRProvider | None = None,
+        search_index: SearchIndex | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.blob_store = blob_store
         self.parser = parser
         self.embedding_provider = embedding_provider
         self.ocr_provider = ocr_provider
+        self.search_index = search_index
 
     async def run(self, revision_id: str) -> PipelineResult:
         with self.session_factory() as session:
@@ -73,22 +65,25 @@ class ResumePipeline:
         normalized = normalize_resume(parsed)
         contents = self._build_chunk_contents(normalized)
         vectors = await self.embedding_provider.embed_documents(contents)
-        filters = {
-            "total_years": float(normalized.total_years) if normalized.total_years else None,
-            "highest_degree": normalized.highest_degree,
-            "location": normalized.location,
-        }
         chunks = tuple(
-            EmbeddedSearchChunk(
+            SearchChunk(
                 id=new_id(),
                 candidate_id=candidate_id,
                 revision_id=revision_id,
                 content=content,
                 vector=tuple(vector),
-                filters=filters,
+                total_years=(
+                    float(normalized.total_years) if normalized.total_years else None
+                ),
+                highest_degree=normalized.highest_degree,
+                location=normalized.location,
+                candidate_status="AVAILABLE",
             )
             for content, vector in zip(contents, vectors, strict=True)
         )
+        if self.search_index is not None:
+            self.search_index.delete_revision(revision_id)
+            self.search_index.upsert(list(chunks))
 
         with self.session_factory() as session, session.begin():
             revision = session.get(ResumeRevision, revision_id)

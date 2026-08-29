@@ -11,6 +11,8 @@ from kerui_recruit.providers.fakes import FakeEmbeddingProvider
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.resumes.structured import ParsedExperience, ParsedResume
+from kerui_recruit.search.contracts import CandidateFilters, SearchRequest
+from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
 from kerui_recruit.storage.blobs import BlobStore
 
 
@@ -119,3 +121,36 @@ async def test_pipeline_uses_ocr_provider_for_a_scanned_pdf(tmp_path: Path) -> N
         revision = session.get(ResumeRevision, ingested.revision_id)
         assert revision is not None
         assert revision.raw_text == "Python Finance Resume recovered by OCR"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_search_projection_before_marking_ready(tmp_path: Path) -> None:
+    """A READY revision must be immediately discoverable in the embedded index."""
+    engine = create_engine_for(tmp_path / "db" / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    store = BlobStore(tmp_path / "blobs", tmp_path / "temp")
+    with factory() as session:
+        ingested = ResumeIngestService(session, store).ingest(
+            IngestResume(filename="张三.pdf", content=make_pdf_bytes())
+        )
+    index = LanceDBSearchIndex(tmp_path / "search", vector_dimension=16)
+    pipeline = ResumePipeline(
+        session_factory=factory,
+        blob_store=store,
+        parser=FixedResumeParser(),
+        embedding_provider=FakeEmbeddingProvider(dimension=16),
+        search_index=index,
+    )
+
+    result = await pipeline.run(ingested.revision_id)
+    hits = index.search(
+        SearchRequest(
+            "Python",
+            result.chunks[0].vector,
+            CandidateFilters(),
+            limit=20,
+        )
+    )
+
+    assert hits[0].candidate_id == ingested.candidate_id
