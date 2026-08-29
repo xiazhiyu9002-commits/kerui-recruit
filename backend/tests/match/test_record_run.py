@@ -50,7 +50,7 @@ def test_record_run_persists_snapshot(session_factory: sessionmaker[Session]) ->
             embedding_provider=LocalHashEmbeddingProvider(dimension=64),
             reranker_provider=LocalKeywordReranker(),
         )
-        run_id = service.record_run(
+        recorded = service.record_run(
             revision_id=revision.id,
             hits=[
                 SearchHit(
@@ -68,9 +68,10 @@ def test_record_run_persists_snapshot(session_factory: sessionmaker[Session]) ->
         )
 
     with session_factory() as session:
-        run = session.get(MatchRun, run_id)
+        run = session.get(MatchRun, recorded.run_id)
         assert run is not None
         assert run.trigger == "JD_MATCH"
         result = session.scalars(select(MatchResult)).one()
         assert result.candidate_id == "cand-1"
         assert result.total_score is not None
+        assert recorded.result_ids["cand-1"] == result.id

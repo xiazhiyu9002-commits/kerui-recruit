@@ -29,6 +29,12 @@ class MatchScore:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordedRun:
+    run_id: str
+    result_ids: dict[str, str]  # candidate_id -> MatchResult.id
+
+
+@dataclass(frozen=True, slots=True)
 class _JdContext:
     revision_id: str
     jd_id: str
@@ -111,9 +117,10 @@ class MatchService:
             },
         )
 
-    def record_run(self, *, revision_id: str, hits) -> str:
+    def record_run(self, *, revision_id: str, hits) -> RecordedRun:
         """Persist an immutable match_run snapshot with sub-scored results."""
         context = self._revision(revision_id)
+        result_ids: dict[str, str] = {}
         with self.session_factory() as session:
             run = MatchRun(
                 trigger="JD_MATCH",
@@ -124,19 +131,20 @@ class MatchService:
             session.flush()
             for hit in hits:
                 score = self.score(revision_id, hit)
-                session.add(
-                    MatchResult(
-                        run=run,
-                        candidate_id=hit.candidate_id,
-                        resume_revision_id=hit.revision_id,
-                        jd_revision_id=revision_id,
-                        total_score=score.total,
-                        score_breakdown=score.breakdown,
-                        status="未处理",
-                    )
+                result = MatchResult(
+                    run=run,
+                    candidate_id=hit.candidate_id,
+                    resume_revision_id=hit.revision_id,
+                    jd_revision_id=revision_id,
+                    total_score=score.total,
+                    score_breakdown=score.breakdown,
+                    status="未处理",
                 )
+                session.add(result)
+                session.flush()
+                result_ids[hit.candidate_id] = result.id
             session.commit()
-            return run.id
+            return RecordedRun(run_id=run.id, result_ids=result_ids)
 
     def _revision(self, revision_id: str) -> _JdContext:
         with self.session_factory() as session:

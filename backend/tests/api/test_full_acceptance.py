@@ -101,6 +101,18 @@ def test_desensitized_sample_end_to_end(client: TestClient) -> None:
     run_id = matched.json()["run_id"]
     assert run_id
 
+    # 4a. 收藏/人工标记：对匹配结果打标记
+    items = matched.json()["items"]
+    if items:
+        result_id = items[0]["result_id"]
+        marked = client.post(
+            f"/api/match/result/{result_id}/mark",
+            json={"status": "保留"},
+            headers=_headers(),
+        )
+        assert marked.status_code == 200
+        assert marked.json()["status"] == "保留"
+
     # 5. 导出：匹配结果可导出为 Excel
     exported = client.get(f"/api/match/run/{run_id}/export", headers=_headers())
     assert exported.status_code == 200
