@@ -33,23 +33,29 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 ## 本机已验证的交付物
 
 - **Windows NSIS 安装包**：`npm run tauri build -- --bundles nsis` 产出 `desktop/src-tauri/target/release/bundle/nsis/kerui-recruit-desktop_0.1.0_x64-setup.exe`（约 152 MB，含 PyInstaller sidecar 与 Tauri 壳）。sidecar 通过 `bundle.resources` 打入安装包，壳层经 `resolve_sidecar_binary` 从资源目录解析。
+- **12 万候选人全量性能压测**（spec 7.3 / 12.2.3）：`python -m kerui_recruit.bench.search_benchmark --candidates 120000 --queries 800 --concurrency 10 --qps 5`，结果见 `docs/verification/phase0-benchmark-120k.json`：
+
+| 指标 | 实测 | 目标 | 结果 |
+| --- | --- | --- | --- |
+| P95 | 436.9 ms | ≤ 1500 ms | ✅ |
+| P99 | 459.21 ms | ≤ 2500 ms | ✅ |
+| error_rate | 0.0 | 0 | ✅ |
+| Recall@300 | 1.0 | ≥ 0.98 | ✅ |
+| nDCG@10 | 0.865 | ≥ 0.85 | ✅ |
+
 - **检索性能门槛**：`pytest tests/performance -m performance` 在 12,000 候选规模通过（p95 ≤ 1.5s、p99 ≤ 2.5s、Recall@300 ≥ 98%）。
 
 ## 尚未在本机闭环的验收项
 
 以下项依赖外部资源或专用构建机，代码与脚本已就绪但需在目标环境执行：
 
-1. **12 万候选人全量性能压测**（spec 7.3）：
-   `python -m kerui_recruit.bench.search_benchmark --candidates 120000 --queries 800 --concurrency 10 --qps 5`
-   验证 P95 ≤ 1.5s、P99 ≤ 2.5s、Recall@300 ≥ 98%、nDCG@10 ≥ 0.85（12,000 规模门槛已通过）。
+1. **代码签名与 macOS 安装包**（spec 11）：Windows NSIS 安装包已构建（未签名）；代码签名需证书。macOS arm64 需在 Apple Silicon 构建机执行 `npm run tauri build`，不可交叉打包。
 
-2. **代码签名与 macOS 安装包**（spec 11）：Windows NSIS 安装包已构建（未签名）；代码签名需证书。macOS arm64 需在 Apple Silicon 构建机执行 `npm run tauri build`，不可交叉打包。
+2. **浏览器端 E2E**（spec 12.1）：`search.spec.ts` 与 `workflow.spec.ts` 需打包后的 Tauri 壳与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环、壳层启动/退出冒烟与安装包构建。
 
-3. **浏览器端 E2E**（spec 12.1）：`search.spec.ts` 与 `workflow.spec.ts` 需打包后的 Tauri 壳与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环、壳层启动/退出冒烟与安装包构建。
+3. **真实/脱敏样本验收**（spec 12.2.4）：需真实简历样本走通解析、去重、版本、搜索、匹配、导出全链路。
 
-4. **真实/脱敏样本验收**（spec 12.2.4）：需真实简历样本走通解析、去重、版本、搜索、匹配、导出全链路。
-
-5. **备份恢复一致性验证**（spec 12.2.5）：`BackupService` 已提供快照/恢复与安全备份，需在干净目录做恢复前后实体数量与 Blob 哈希比对。
+4. **备份恢复一致性验证**（spec 12.2.5）：`BackupService` 已提供快照/恢复与安全备份，需在干净目录做恢复前后实体数量与 Blob 哈希比对。
 
 ## CI
 
