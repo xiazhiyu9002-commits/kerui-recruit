@@ -1,11 +1,14 @@
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, Request, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import select, update
 
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
+from kerui_recruit.db.models import ResumeDocument, ResumeRevision
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 
 
@@ -73,3 +76,59 @@ def import_folder(command: ImportFolderRequest, request: Request) -> ImportFolde
         except Exception as exc:  # noqa: BLE001 - report per-file failures
             errors.append(f"{path.name}: {exc}")
     return ImportFolderResponse(imported=imported, skipped=skipped, errors=errors)
+
+
+class ResumeRevisionItem(BaseModel):
+    revision_id: str
+    display_name: str | None
+    original_filename: str
+    status: str
+    is_current: bool
+    created_at: datetime
+
+
+@router.get("/candidate/{candidate_id}/revisions", response_model=list[ResumeRevisionItem])
+def list_revisions(candidate_id: str, request: Request) -> list[ResumeRevisionItem]:
+    services: AppServices = request.app.state.services
+    with services.session_factory() as session:
+        revisions = session.scalars(
+            select(ResumeRevision)
+            .join(ResumeDocument, ResumeDocument.id == ResumeRevision.document_id)
+            .where(ResumeDocument.candidate_id == candidate_id)
+            .order_by(ResumeRevision.created_at.desc())
+        ).all()
+    return [
+        ResumeRevisionItem(
+            revision_id=r.id,
+            display_name=r.display_name,
+            original_filename=r.original_filename,
+            status=r.status,
+            is_current=r.is_current,
+            created_at=r.created_at,
+        )
+        for r in revisions
+    ]
+
+
+@router.post("/revisions/{revision_id}/switch", response_model=ResumeRevisionItem)
+def switch_revision(revision_id: str, request: Request) -> ResumeRevisionItem:
+    services: AppServices = request.app.state.services
+    with services.session_factory() as session, session.begin():
+        revision = session.get(ResumeRevision, revision_id)
+        if revision is None:
+            raise ApiError(404, "E_REVISION_NOT_FOUND", "简历版本不存在")
+        session.execute(
+            update(ResumeRevision)
+            .where(ResumeRevision.document_id == revision.document_id)
+            .values(is_current=False)
+        )
+        revision.is_current = True
+        session.flush()
+        return ResumeRevisionItem(
+            revision_id=revision.id,
+            display_name=revision.display_name,
+            original_filename=revision.original_filename,
+            status=revision.status,
+            is_current=revision.is_current,
+            created_at=revision.created_at,
+        )

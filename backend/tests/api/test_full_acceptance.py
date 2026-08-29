@@ -63,6 +63,14 @@ def test_desensitized_sample_end_to_end(client: TestClient) -> None:
     first = imported.json()
     assert _wait_task(client, first["task_id"])["status"] == "SUCCESS"
 
+    # 1a. 版本历史：候选人的简历版本可列出
+    revisions = client.get(
+        f"/api/resumes/candidate/{first['candidate_id']}/revisions",
+        headers=_headers(),
+    )
+    assert revisions.status_code == 200
+    assert revisions.json()[0]["is_current"] is True
+
     # 2. 去重：再次导入同一份原件，物理 Blob 复用
     again = client.post(
         "/api/resumes/import",
