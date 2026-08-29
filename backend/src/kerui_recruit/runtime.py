@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from sqlalchemy.orm import sessionmaker
 
 from kerui_recruit.api.services import AppServices
+from kerui_recruit.backup.portable import PortableBackupService
 from kerui_recruit.backup.service import BackupService
 from kerui_recruit.bd_search.service import BdSearchService
 from kerui_recruit.cases.service import CaseService
@@ -89,6 +90,9 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         engine=engine,
         database_path=settings.paths.database,
         backup_dir=settings.paths.backups,
+    )
+    portable_backup_service = PortableBackupService(
+        current_root=settings.paths.root,
     )
     diagnostics_service = DiagnosticsService(
         session_factory=factory,
@@ -183,6 +187,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         correction_service=correction_service,
         soft_delete_service=soft_delete_service,
         backup_service=backup_service,
+        portable_backup_service=portable_backup_service,
         diagnostics_service=diagnostics_service,
         mapping_service=mapping_service,
         reminder_service=reminder_service,

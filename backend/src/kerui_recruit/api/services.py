@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from kerui_recruit.backup.portable import PortableBackupService
 from kerui_recruit.backup.service import BackupService
 from kerui_recruit.bd_search.service import BdSearchService
 from kerui_recruit.cases.service import CaseService
@@ -37,6 +38,7 @@ class AppServices:
     correction_service: CorrectionService | None = None
     soft_delete_service: SoftDeleteService | None = None
     backup_service: BackupService | None = None
+    portable_backup_service: PortableBackupService | None = None
     diagnostics_service: DiagnosticsService | None = None
     mapping_service: MappingService | None = None
     reminder_service: ReminderService | None = None

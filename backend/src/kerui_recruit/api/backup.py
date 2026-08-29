@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from kerui_recruit.api.services import AppServices
+from kerui_recruit.backup.portable import PortableRestoreReport
 
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
@@ -46,3 +49,45 @@ def restore_snapshot(filename: str, request: Request) -> RestoreResponse:
     services: AppServices = request.app.state.services
     safety = services.backup_service.restore_snapshot(filename)
     return RestoreResponse(restored_from=filename, safety_backup=str(safety))
+
+
+class CreatePortableRequest(BaseModel):
+    target_path: str
+
+
+class CreatePortableResponse(BaseModel):
+    path: str
+
+
+class RestorePortableRequest(BaseModel):
+    backup_path: str
+    target_root: str
+
+
+class RestorePortableResponse(BaseModel):
+    target_root: str
+    files_restored: int
+    files_verified: int
+    ok: bool
+
+
+@router.post("/portable", response_model=CreatePortableResponse)
+def create_portable(command: CreatePortableRequest, request: Request) -> CreatePortableResponse:
+    services: AppServices = request.app.state.services
+    path = services.portable_backup_service.create(Path(command.target_path))
+    return CreatePortableResponse(path=str(path))
+
+
+@router.post("/portable/restore", response_model=RestorePortableResponse)
+def restore_portable(command: RestorePortableRequest, request: Request) -> RestorePortableResponse:
+    services: AppServices = request.app.state.services
+    report: PortableRestoreReport = services.portable_backup_service.restore(
+        Path(command.backup_path),
+        Path(command.target_root),
+    )
+    return RestorePortableResponse(
+        target_root=report.target_root,
+        files_restored=report.files_restored,
+        files_verified=report.files_verified,
+        ok=report.ok,
+    )
