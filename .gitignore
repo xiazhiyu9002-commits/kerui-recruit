@@ -14,6 +14,10 @@ build/
 node_modules/
 desktop/dist/
 desktop/src-tauri/target/
+desktop/src-tauri/gen/
+*.tsbuildinfo
+desktop/vite.config.js
+desktop/vite.config.d.ts
 
 # Local runtime data and secrets
 .env

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+
+from kerui_recruit.resumes.structured import ParsedResume
+
+
+class LocalHashEmbeddingProvider:
+    """Deterministic packaged fallback used before a model API is configured."""
+
+    def __init__(self, *, dimension: int = 64) -> None:
+        self.dimension = dimension
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in texts]
+
+    async def embed_query(self, text: str) -> list[float]:
+        return self._embed(text)
+
+    def _embed(self, text: str) -> list[float]:
+        values: list[float] = []
+        counter = 0
+        while len(values) < self.dimension:
+            digest = hashlib.sha256(f"{counter}:{text}".encode("utf-8")).digest()
+            values.extend((byte - 127.5) / 127.5 for byte in digest)
+            counter += 1
+        vector = values[: self.dimension]
+        magnitude = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / magnitude for value in vector]
+
+
+class LocalKeywordReranker:
+    async def rerank(self, query: str, documents: list[str]) -> list[int]:
+        terms = tuple(term.casefold() for term in query.split() if term)
+        scores = [
+            (sum(document.casefold().count(term) for term in terms), index)
+            for index, document in enumerate(documents)
+        ]
+        return [index for _, index in sorted(scores, key=lambda item: (-item[0], item[1]))]
+
+
+class LocalResumeParser:
+    """Conservative offline parser; unknown fields remain unknown."""
+
+    skill_terms = (
+        "Python", "Java", "JavaScript", "TypeScript", "Go", "Rust", "C++",
+        "React", "Vue", "SQL", "金融", "风控", "支付", "招聘", "销售"
+    )
+    locations = ("北京", "上海", "深圳", "广州", "杭州", "成都", "Hong Kong")
+
+    async def parse_resume(self, text: str) -> ParsedResume:
+        compact = " ".join(text.split())
+        years_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:年|years?)", compact, re.I)
+        total_years = float(years_match.group(1)) if years_match else None
+        degree = None
+        for token, normalized in (
+            ("博士", "DOCTOR"), ("PhD", "DOCTOR"),
+            ("硕士", "MASTER"), ("Master", "MASTER"),
+            ("本科", "BACHELOR"), ("Bachelor", "BACHELOR"),
+            ("大专", "ASSOCIATE"),
+        ):
+            if token.casefold() in compact.casefold():
+                degree = normalized
+                break
+        location = next(
+            (item for item in self.locations if item.casefold() in compact.casefold()),
+            None,
+        )
+        skills = [
+            item for item in self.skill_terms if item.casefold() in compact.casefold()
+        ]
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "待识别")
+        return ParsedResume(
+            name=first_line[:80],
+            total_years=total_years,
+            highest_degree=degree,
+            location=location,
+            skills=skills,
+            summary=compact[:1_000],
+        )

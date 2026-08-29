@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import AsyncContextManager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -14,8 +16,15 @@ from kerui_recruit.api.tasks import router as tasks_router
 from kerui_recruit.resumes.ingest import UnsupportedResumeType
 
 
-def create_app(services: AppServices | None = None) -> FastAPI:
-    app = FastAPI(title="KeRui Recruit", version="0.1.0")
+Lifespan = Callable[[FastAPI], AsyncContextManager[None]]
+
+
+def create_app(
+    services: AppServices | None = None,
+    *,
+    lifespan: Lifespan | None = None,
+) -> FastAPI:
+    app = FastAPI(title="KeRui Recruit", version="0.1.0", lifespan=lifespan)
     if services is not None:
         app.state.services = services
 
@@ -70,6 +79,10 @@ def create_app(services: AppServices | None = None) -> FastAPI:
         return {"status": "alive"}
 
     if services is not None:
+        @app.get("/health/ready")
+        def ready() -> dict[str, str]:
+            return {"status": "ready"}
+
         app.include_router(resumes_router)
         app.include_router(tasks_router)
         app.include_router(search_router)

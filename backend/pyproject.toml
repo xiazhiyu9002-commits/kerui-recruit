@@ -21,6 +21,9 @@ dependencies = [
   "uvicorn>=0.35,<1",
 ]
 
+[project.scripts]
+kerui-recruit-sidecar = "kerui_recruit.sidecar:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.4,<9",
@@ -32,4 +35,7 @@ packages = ["src/kerui_recruit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not performance'"
+markers = [
+  "performance: slow, scaled acceptance benchmarks for the Phase 0 gate",
+]
