@@ -35,10 +35,23 @@ export interface CandidateSearchResult {
   degraded_reasons: string[];
 }
 
+export interface ImportedJd {
+  jd_id: string;
+  revision_id: string;
+}
+
+export interface MatchRun {
+  run_id: string;
+  items: CandidateSearchItem[];
+}
+
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   getTask(taskId: string): Promise<TaskStatus>;
   searchCandidates(query: string): Promise<CandidateSearchResult>;
+  importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
+  matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
+  health(): Promise<Record<string, { status: string; message?: string }>>;
 }
 
 
@@ -53,12 +66,28 @@ function taskLabel(task: TaskStatus): string {
 
 
 export function App({ api }: { api: RecruitmentApi }) {
+  const [activeNav, setActiveNav] = useState(0);
+
+  // 人才库
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CandidateSearchItem[]>([]);
   const [selected, setSelected] = useState<CandidateSearchItem | null>(null);
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+
+  // JD 管理
+  const [jdCompany, setJdCompany] = useState("");
+  const [jdTitle, setJdTitle] = useState("");
+  const [jdSource, setJdSource] = useState("");
+  const [jdResult, setJdResult] = useState<ImportedJd | null>(null);
+
+  // 人岗匹配
+  const [matchRevision, setMatchRevision] = useState("");
+  const [matchRun, setMatchRun] = useState<MatchRun | null>(null);
+
+  // 设置 / 健康
+  const [health, setHealth] = useState<Record<string, { status: string; message?: string }> | null>(null);
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -88,6 +117,43 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function submitJd(event: FormEvent) {
+    event.preventDefault();
+    if (!jdTitle.trim() || !jdSource.trim()) return;
+    setError(null);
+    try {
+      const result = await api.importJd({
+        company: jdCompany.trim(),
+        title: jdTitle.trim(),
+        sourceText: jdSource.trim()
+      });
+      setJdResult(result);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "JD 导入失败");
+    }
+  }
+
+  async function runMatch(event: FormEvent) {
+    event.preventDefault();
+    if (!matchRevision.trim()) return;
+    setError(null);
+    try {
+      const result = await api.matchJd(matchRevision.trim(), 20);
+      setMatchRun(result);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "匹配失败");
+    }
+  }
+
+  async function checkHealth() {
+    setError(null);
+    try {
+      setHealth(await api.health());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "健康检测失败");
+    }
+  }
+
   return (
     <div className="app-shell">
       <aside className="navigation" aria-label="主导航">
@@ -97,7 +163,11 @@ export function App({ api }: { api: RecruitmentApi }) {
         </div>
         <nav>
           {navigation.map((item, index) => (
-            <button className={index === 0 ? "nav-item active" : "nav-item"} key={item}>
+            <button
+              className={index === activeNav ? "nav-item active" : "nav-item"}
+              key={item}
+              onClick={() => setActiveNav(index)}
+            >
               <span>{index + 1}</span>{item}
             </button>
           ))}
@@ -107,69 +177,142 @@ export function App({ api }: { api: RecruitmentApi }) {
 
       <main className="workspace">
         <header className="topbar">
-          <div><h1>人才库</h1><p>结构化管理与智能匹配候选人</p></div>
-          <label className="import-button">
-            导入简历
-            <input
-              aria-label="选择简历文件"
-              accept=".pdf,.doc,.docx"
-              type="file"
-              onChange={(event) => void uploadResume(event.target.files?.[0])}
-            />
-          </label>
+          <div><h1>{navigation[activeNav]}</h1><p>结构化管理与智能匹配候选人</p></div>
+          {activeNav === 0 && (
+            <label className="import-button">
+              导入简历
+              <input
+                aria-label="选择简历文件"
+                accept=".pdf,.doc,.docx"
+                type="file"
+                onChange={(event) => void uploadResume(event.target.files?.[0])}
+              />
+            </label>
+          )}
         </header>
-
-        <section className="search-panel">
-          <form onSubmit={(event) => void submitSearch(event)}>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索人才、技能、公司或自然语言"
-              aria-label="人才搜索"
-            />
-            <kbd>Ctrl K</kbd>
-            <button disabled={searching} type="submit">{searching ? "搜索中" : "搜索"}</button>
-          </form>
-          <div className="quick-filters">
-            <button>工作年限</button><button>学历</button><button>地点</button><button>学校等级</button>
-          </div>
-        </section>
 
         {error && <div className="error-banner" role="alert">{error}</div>}
 
-        <section className="content-grid">
-          <div className="results-card">
-            <div className="section-heading"><h2>候选人</h2><span>{results.length} 条结果</span></div>
-            {results.length === 0 ? (
-              <div className="empty-state"><strong>从一次搜索开始</strong><p>输入技能、经历或自然语言条件查找人才。</p></div>
-            ) : (
-              <table>
-                <thead><tr><th>匹配证据</th><th>经验</th><th>学历</th><th>地点</th><th /></tr></thead>
-                <tbody>
-                  {results.map((item) => (
-                    <tr key={item.candidate_id}>
-                      <td><strong>{item.content}</strong><small>{item.matched_channels.join(" + ")}</small></td>
-                      <td>{item.total_years ?? "—"} 年</td>
-                      <td>{item.highest_degree ?? "待核验"}</td>
-                      <td>{item.location ?? "待核验"}</td>
-                      <td><button className="detail-button" onClick={() => setSelected(item)}>查看详情</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+        {activeNav === 0 && (
+          <>
+            <section className="search-panel">
+              <form onSubmit={(event) => void submitSearch(event)}>
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜索人才、技能、公司或自然语言"
+                  aria-label="人才搜索"
+                />
+                <kbd>Ctrl K</kbd>
+                <button disabled={searching} type="submit">{searching ? "搜索中" : "搜索"}</button>
+              </form>
+              <div className="quick-filters">
+                <button>工作年限</button><button>学历</button><button>地点</button><button>学校等级</button>
+              </div>
+            </section>
 
-          <aside className="task-center" aria-label="任务中心">
-            <div className="section-heading"><h2>任务中心</h2><span>{tasks.length}</span></div>
-            {tasks.length === 0 ? <p className="muted">暂无后台任务</p> : tasks.map((task) => (
-              <article key={task.id}>
-                <strong>{taskLabel(task)}</strong><code>{task.id}</code>
-                <progress max="100" value={task.progress} />
-              </article>
-            ))}
-          </aside>
-        </section>
+            <section className="content-grid">
+              <div className="results-card">
+                <div className="section-heading"><h2>候选人</h2><span>{results.length} 条结果</span></div>
+                {results.length === 0 ? (
+                  <div className="empty-state"><strong>从一次搜索开始</strong><p>输入技能、经历或自然语言条件查找人才。</p></div>
+                ) : (
+                  <table>
+                    <thead><tr><th>匹配证据</th><th>经验</th><th>学历</th><th>地点</th><th /></tr></thead>
+                    <tbody>
+                      {results.map((item) => (
+                        <tr key={item.candidate_id}>
+                          <td><strong>{item.content}</strong><small>{item.matched_channels.join(" + ")}</small></td>
+                          <td>{item.total_years ?? "—"} 年</td>
+                          <td>{item.highest_degree ?? "待核验"}</td>
+                          <td>{item.location ?? "待核验"}</td>
+                          <td><button className="detail-button" onClick={() => setSelected(item)}>查看详情</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <aside className="task-center" aria-label="任务中心">
+                <div className="section-heading"><h2>任务中心</h2><span>{tasks.length}</span></div>
+                {tasks.length === 0 ? <p className="muted">暂无后台任务</p> : tasks.map((task) => (
+                  <article key={task.id}>
+                    <strong>{taskLabel(task)}</strong><code>{task.id}</code>
+                    <progress max="100" value={task.progress} />
+                  </article>
+                ))}
+              </aside>
+            </section>
+          </>
+        )}
+
+        {activeNav === 1 && (
+          <section className="jd-panel">
+            <form className="jd-form" onSubmit={(event) => void submitJd(event)}>
+              <div className="jd-row">
+                <input value={jdCompany} onChange={(e) => setJdCompany(e.target.value)} placeholder="公司名称" aria-label="JD 公司" />
+                <input value={jdTitle} onChange={(e) => setJdTitle(e.target.value)} placeholder="岗位名称" aria-label="JD 岗位" />
+              </div>
+              <textarea value={jdSource} onChange={(e) => setJdSource(e.target.value)} placeholder="粘贴 JD 原文…" aria-label="JD 原文" />
+              <button type="submit">导入并解析</button>
+            </form>
+            {jdResult && (
+              <div className="jd-result" role="status">
+                <strong>导入成功</strong>
+                <code>{jdResult.revision_id}</code>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeNav === 2 && (
+          <section className="jd-panel">
+            <form className="jd-form" onSubmit={(event) => void runMatch(event)}>
+              <input value={matchRevision} onChange={(e) => setMatchRevision(e.target.value)} placeholder="JD 版本 ID" aria-label="匹配 JD 版本" />
+              <button type="submit">开始匹配</button>
+            </form>
+            {matchRun && (
+              <div className="results-card">
+                <div className="section-heading"><h2>匹配结果</h2><span>{matchRun.items.length} 人</span></div>
+                {matchRun.items.length === 0 ? (
+                  <div className="empty-state"><strong>暂无匹配候选人</strong></div>
+                ) : (
+                  <table>
+                    <thead><tr><th>候选人</th><th>得分</th><th>经验</th><th>学历</th></tr></thead>
+                    <tbody>
+                      {matchRun.items.map((item) => (
+                        <tr key={item.candidate_id}>
+                          <td><strong>{item.content}</strong></td>
+                          <td>{item.score.toFixed(3)}</td>
+                          <td>{item.total_years ?? "—"} 年</td>
+                          <td>{item.highest_degree ?? "待核验"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeNav === 6 && (
+          <section className="jd-panel">
+            <div className="section-heading"><h2>健康检测台</h2><button className="import-button" onClick={() => void checkHealth()}>运行检测</button></div>
+            {health && (
+              <div className="health-grid">
+                {Object.entries(health).map(([name, component]) => (
+                  <div key={name} className="health-card">
+                    <small>{name}</small>
+                    <strong className={component.status === "healthy" ? "ok" : "bad"}>{component.status === "healthy" ? "正常" : "异常"}</strong>
+                    {component.message && <p>{component.message}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </main>
 
       {selected && (

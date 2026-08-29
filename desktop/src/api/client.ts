@@ -50,6 +50,35 @@ export class ApiClient implements RecruitmentApi {
     });
   }
 
+  importJd(input: { company: string; title: string; sourceText: string }) {
+    return this.request<{ jd_id: string; revision_id: string }>("/api/jd/import", {
+      body: JSON.stringify({
+        company: input.company,
+        title: input.title,
+        source_text: input.sourceText
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  matchJd(revisionId: string, limit = 20) {
+    return this.request<{ run_id: string; items: CandidateSearchResult["items"] }>(
+      "/api/match/jd",
+      {
+        body: JSON.stringify({ revision_id: revisionId, limit }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  health() {
+    return this.request<Record<string, { status: string; message?: string }>>(
+      "/health/checks"
+    );
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("X-Kerui-Session", this.sessionToken);

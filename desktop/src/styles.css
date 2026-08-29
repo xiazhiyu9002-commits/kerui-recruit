@@ -67,3 +67,21 @@ td small { color: #8b978f; margin-top: 5px; }
 .fact-grid div { padding: 14px; background: #f4f7f4; border-radius: 10px; }
 .fact-grid small, .fact-grid strong { display: block; }
 .fact-grid small { color: #849087; margin-bottom: 6px; }
+
+.jd-panel { margin-top: 28px; padding: 24px; background: white; border: 1px solid #dfe7e1; border-radius: 15px; }
+.jd-form { display: grid; gap: 14px; }
+.jd-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.jd-form input, .jd-form textarea { width: 100%; border: 1px solid #dfe7e1; border-radius: 10px; padding: 12px 14px; background: #fbfcfb; font: inherit; outline: none; }
+.jd-form textarea { min-height: 180px; resize: vertical; }
+.jd-form button { border: 0; border-radius: 10px; background: #1e5b43; color: white; padding: 12px 18px; font-weight: 700; justify-self: start; }
+.jd-result { margin-top: 18px; padding: 14px; background: #f2faf5; border: 1px solid #cde6d6; border-radius: 10px; }
+.jd-result strong, .jd-result code { display: block; }
+.jd-result code { color: #2a7656; margin-top: 6px; word-break: break-all; }
+
+.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 18px; }
+.health-card { padding: 16px; background: #f7faf7; border-radius: 10px; }
+.health-card small { color: #849087; }
+.health-card strong { display: block; margin-top: 8px; font-size: 18px; }
+.health-card strong.ok { color: #1e6849; }
+.health-card strong.bad { color: #c0392b; }
+.health-card p { margin: 8px 0 0; color: #8b978f; font-size: 12px; }
