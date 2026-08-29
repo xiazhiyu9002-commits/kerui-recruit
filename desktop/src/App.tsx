@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import "./styles.css";
 
@@ -45,6 +45,100 @@ export interface MatchRun {
   items: CandidateSearchItem[];
 }
 
+export interface DiagnosticsData {
+  sqlite_version: string;
+  database_path: string;
+  database_size_bytes: number;
+  counts: Record<string, number>;
+  pragmas: Record<string, string>;
+}
+
+export interface MappingProject {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+export interface MappingSnapshot {
+  id: string;
+  label: string;
+  is_current: boolean;
+}
+
+export interface MappingTreeNode {
+  id: string;
+  name: string;
+  sort_order: number;
+  children: MappingTreeNode[];
+}
+
+export interface BdLead {
+  id: string;
+  source: string;
+  company_name: string;
+  job_title: string | null;
+  raw_snippet: string | null;
+  url: string | null;
+  status: string;
+}
+
+export interface CaseItem {
+  id: string;
+  candidate_id: string;
+  jd_id: string;
+  stage: string;
+  note: string | null;
+}
+
+export interface StageEventItem {
+  id: string;
+  stage: string;
+  note: string | null;
+}
+
+export interface DashboardOverview {
+  recommendation_total: number;
+  funnel: { stage: string; count: number }[];
+  health: {
+    candidate_total: number;
+    ready_total: number;
+    parse_failed: number;
+    recent_30d: number;
+    open_jd_total: number;
+  };
+}
+
+export interface ReverseMatchItem {
+  jd_id: string;
+  revision_id: string;
+  company: string;
+  title: string;
+  score: number;
+}
+
+export interface DeletedItem {
+  entity_type: string;
+  entity_id: string;
+  label: string;
+  deleted_at: string | null;
+}
+
+export interface AppSettings {
+  deepseek_api_key?: string;
+  deepseek_base_url?: string;
+  deepseek_model?: string;
+  siliconflow_api_key?: string;
+  siliconflow_base_url?: string;
+  siliconflow_embedding_model?: string;
+  siliconflow_reranker_model?: string;
+  tavily_api_key?: string;
+  tavily_base_url?: string;
+  imap_host?: string;
+  imap_account?: string;
+  imap_auth_code?: string;
+  imap_whitelist?: string;
+}
+
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   getTask(taskId: string): Promise<TaskStatus>;
@@ -52,10 +146,38 @@ export interface RecruitmentApi {
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
   matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
   health(): Promise<Record<string, { status: string; message?: string }>>;
+  diagnostics(): Promise<DiagnosticsData>;
+  listMappingProjects(): Promise<MappingProject[]>;
+  createMappingProject(name: string, description?: string): Promise<MappingProject>;
+  buildMappingTree(projectId: string, text: string, label?: string): Promise<MappingSnapshot>;
+  listMappingSnapshots(projectId: string): Promise<MappingSnapshot[]>;
+  getMappingTree(snapshotId: string): Promise<MappingTreeNode[]>;
+  searchBdLeads(query: string, limit?: number): Promise<BdLead[]>;
+  searchLeadsForCandidate(candidateId: string, limit?: number): Promise<BdLead[]>;
+  updateLeadStatus(leadId: string, status: string, note?: string): Promise<BdLead>;
+  createCase(candidateId: string, jdId: string): Promise<CaseItem>;
+  listCases(candidateId?: string): Promise<CaseItem[]>;
+  advanceCase(caseId: string, stage: string, note?: string): Promise<CaseItem>;
+  undoCase(caseId: string): Promise<CaseItem>;
+  getCaseEvents(caseId: string): Promise<StageEventItem[]>;
+  dashboardOverview(): Promise<DashboardOverview>;
+  dashboardByJd(): Promise<{ jd_id: string; company: string; title: string; stage_counts: Record<string, number> }[]>;
+  reverseMatch(candidateId: string): Promise<ReverseMatchItem[]>;
+  listDeleted(): Promise<DeletedItem[]>;
+  restoreDeleted(entityType: string, entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
+  exportMappingTree(snapshotId: string): Promise<void>;
+  getSettings(): Promise<AppSettings>;
+  updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
 }
 
 
 const navigation = ["人才库", "JD 管理", "人岗匹配", "数据看板", "Mapping", "BD 助手", "设置"];
+
+const STAGES = [
+  "待评估", "待联系", "已联系", "有意向", "已推荐",
+  "初试", "复试", "终试", "Offer", "入职",
+  "客户拒绝", "候选人拒绝", "暂缓", "岗位关闭"
+];
 
 
 function taskLabel(task: TaskStatus): string {
@@ -89,6 +211,37 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 设置 / 健康
   const [health, setHealth] = useState<Record<string, { status: string; message?: string }> | null>(null);
 
+  // 数据看板
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsData | null>(null);
+
+  // Mapping
+  const [projects, setProjects] = useState<MappingProject[]>([]);
+  const [projectName, setProjectName] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [snapshots, setSnapshots] = useState<MappingSnapshot[]>([]);
+  const [mappingText, setMappingText] = useState("");
+  const [mappingLabel, setMappingLabel] = useState("");
+  const [tree, setTree] = useState<MappingTreeNode[]>([]);
+
+  // BD 助手
+  const [bdQuery, setBdQuery] = useState("");
+  const [bdLeads, setBdLeads] = useState<BdLead[]>([]);
+
+  // 看板
+  const [dashboard, setDashboard] = useState<DashboardOverview | null>(null);
+
+  // 招聘流程（候选人详情）
+  const [selectedCases, setSelectedCases] = useState<CaseItem[]>([]);
+  const [caseEvents, setCaseEvents] = useState<StageEventItem[]>([]);
+  const [reverseMatches, setReverseMatches] = useState<ReverseMatchItem[]>([]);
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+
+  // 回收站
+  const [deletedItems, setDeletedItems] = useState<DeletedItem[]>([]);
+
+  // 设置
+  const [settings, setSettings] = useState<AppSettings>({});
+
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
@@ -105,15 +258,18 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function uploadResume(file: File | undefined) {
-    if (!file) return;
+  async function uploadResume(file: File | undefined, files?: FileList | null) {
+    const selected = files && files.length > 0 ? Array.from(files) : file ? [file] : [];
+    if (selected.length === 0) return;
     setError(null);
-    try {
-      const imported = await api.importResume(file);
-      const task = await api.getTask(imported.task_id);
-      setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "导入失败，请检查文件");
+    for (const item of selected) {
+      try {
+        const imported = await api.importResume(item);
+        const task = await api.getTask(imported.task_id);
+        setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "导入失败，请检查文件");
+      }
     }
   }
 
@@ -154,6 +310,226 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function loadDiagnostics() {
+    setError(null);
+    try {
+      setDiagnostics(await api.diagnostics());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "诊断信息加载失败");
+    }
+  }
+
+  async function loadProjects() {
+    setError(null);
+    try {
+      setProjects(await api.listMappingProjects());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "项目列表加载失败");
+    }
+  }
+
+  async function createProject(event: FormEvent) {
+    event.preventDefault();
+    if (!projectName.trim()) return;
+    setError(null);
+    try {
+      const project = await api.createMappingProject(projectName.trim());
+      setProjects((current) => [project, ...current]);
+      setProjectName("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建项目失败");
+    }
+  }
+
+  async function selectProject(projectId: string) {
+    setError(null);
+    setSelectedProjectId(projectId);
+    try {
+      setSnapshots(await api.listMappingSnapshots(projectId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "快照加载失败");
+    }
+  }
+
+  async function buildTree(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedProjectId || !mappingText.trim()) return;
+    setError(null);
+    try {
+      const snapshot = await api.buildMappingTree(
+        selectedProjectId,
+        mappingText,
+        mappingLabel.trim()
+      );
+      setSnapshots((current) => [snapshot, ...current]);
+      setTree(await api.getMappingTree(snapshot.id));
+      setMappingText("");
+      setMappingLabel("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "建树失败");
+    }
+  }
+
+  async function loadTree(snapshotId: string) {
+    setError(null);
+    try {
+      setTree(await api.getMappingTree(snapshotId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "树加载失败");
+    }
+  }
+
+  async function searchBd(event: FormEvent) {
+    event.preventDefault();
+    if (!bdQuery.trim()) return;
+    setError(null);
+    try {
+      setBdLeads(await api.searchBdLeads(bdQuery.trim(), 20));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "线索搜索失败");
+    }
+  }
+
+  async function loadDashboard() {
+    setError(null);
+    try {
+      setDashboard(await api.dashboardOverview());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "看板加载失败");
+    }
+  }
+
+  async function openCandidateDetail(item: CandidateSearchItem) {
+    setSelected(item);
+    setActiveCaseId(null);
+    setCaseEvents([]);
+    setError(null);
+    try {
+      setSelectedCases(await api.listCases(item.candidate_id));
+      setReverseMatches(await api.reverseMatch(item.candidate_id));
+    } catch {
+      // 详情抽屉仍可打开，即使流程数据加载失败。
+    }
+  }
+
+  async function loadCaseEvents(caseId: string) {
+    setActiveCaseId(caseId);
+    setError(null);
+    try {
+      setCaseEvents(await api.getCaseEvents(caseId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "流程记录加载失败");
+    }
+  }
+
+  async function advanceStage(caseId: string, stage: string) {
+    setError(null);
+    try {
+      const updated = await api.advanceCase(caseId, stage);
+      setSelectedCases((current) =>
+        current.map((c) => (c.id === updated.id ? updated : c))
+      );
+      await loadCaseEvents(caseId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "推进失败");
+    }
+  }
+
+  async function undoStage(caseId: string) {
+    setError(null);
+    try {
+      const updated = await api.undoCase(caseId);
+      setSelectedCases((current) =>
+        current.map((c) => (c.id === updated.id ? updated : c))
+      );
+      await loadCaseEvents(caseId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "撤销失败");
+    }
+  }
+
+  async function createCaseFromReverse(match: ReverseMatchItem) {
+    if (!selected) return;
+    setError(null);
+    try {
+      const created = await api.createCase(selected.candidate_id, match.jd_id);
+      setSelectedCases((current) =>
+        current.some((c) => c.id === created.id) ? current : [created, ...current]
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建流程失败");
+    }
+  }
+
+  async function loadDeleted() {
+    setError(null);
+    try {
+      setDeletedItems(await api.listDeleted());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "回收站加载失败");
+    }
+  }
+
+  async function restoreItem(item: DeletedItem) {
+    setError(null);
+    try {
+      await api.restoreDeleted(item.entity_type, item.entity_id);
+      setDeletedItems((current) => current.filter((d) => d.entity_id !== item.entity_id));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "恢复失败");
+    }
+  }
+
+  async function loadSettings() {
+    setError(null);
+    try {
+      setSettings(await api.getSettings());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "设置加载失败");
+    }
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      setSettings(await api.updateSettings(settings));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "设置保存失败");
+    }
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const meta = event.metaKey || event.ctrlKey;
+      if (!meta) return;
+
+      if (event.key === "k" || event.key === "K") {
+        event.preventDefault();
+        setActiveNav(0);
+        return;
+      }
+      const digit = Number(event.key);
+      if (digit >= 1 && digit <= navigation.length) {
+        event.preventDefault();
+        setActiveNav(digit - 1);
+      }
+    }
+
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setSelected(null);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, []);
+
   return (
     <div className="app-shell">
       <aside className="navigation" aria-label="主导航">
@@ -184,8 +560,9 @@ export function App({ api }: { api: RecruitmentApi }) {
               <input
                 aria-label="选择简历文件"
                 accept=".pdf,.doc,.docx"
+                multiple
                 type="file"
-                onChange={(event) => void uploadResume(event.target.files?.[0])}
+                onChange={(event) => void uploadResume(undefined, event.target.files)}
               />
             </label>
           )}
@@ -226,7 +603,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                           <td>{item.total_years ?? "—"} 年</td>
                           <td>{item.highest_degree ?? "待核验"}</td>
                           <td>{item.location ?? "待核验"}</td>
-                          <td><button className="detail-button" onClick={() => setSelected(item)}>查看详情</button></td>
+                          <td><button className="detail-button" onClick={() => void openCandidateDetail(item)}>查看详情</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -297,9 +674,158 @@ export function App({ api }: { api: RecruitmentApi }) {
           </section>
         )}
 
+        {activeNav === 3 && (
+          <section className="jd-panel">
+            <div className="section-heading"><h2>招聘看板</h2><button className="import-button" onClick={() => void loadDashboard()}>刷新看板</button></div>
+            {dashboard ? (
+              <>
+                <div className="health-grid">
+                  <div className="health-card"><small>推荐总数</small><strong>{dashboard.recommendation_total}</strong></div>
+                  <div className="health-card"><small>候选人总数</small><strong>{dashboard.health.candidate_total}</strong></div>
+                  <div className="health-card"><small>已解析简历</small><strong>{dashboard.health.ready_total}</strong></div>
+                  <div className="health-card"><small>解析失败</small><strong>{dashboard.health.parse_failed}</strong></div>
+                  <div className="health-card"><small>近30天新增</small><strong>{dashboard.health.recent_30d}</strong></div>
+                  <div className="health-card"><small>开放岗位</small><strong>{dashboard.health.open_jd_total}</strong></div>
+                </div>
+
+                {dashboard.funnel.length > 0 && (
+                  <div className="results-card">
+                    <div className="section-heading"><h2>面试漏斗</h2></div>
+                    <div className="funnel-bars">
+                      {dashboard.funnel.map((item) => (
+                        <div key={item.stage} className="funnel-bar">
+                          <span>{item.stage}</span>
+                          <div className="funnel-track"><div className="funnel-fill" style={{ width: `${Math.max(4, item.count * 20)}px` }} /></div>
+                          <strong>{item.count}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="empty-state"><strong>加载看板数据</strong><p>点击「刷新看板」查看推荐统计与面试漏斗。</p></div>
+            )}
+          </section>
+        )}
+
+        {activeNav === 4 && (
+          <section className="jd-panel">
+            <form className="jd-form" onSubmit={(event) => void createProject(event)}>
+              <div className="jd-row">
+                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="项目名称，如：互联网公司图谱" aria-label="项目名称" />
+                <button type="submit">新建项目</button>
+              </div>
+            </form>
+            <button className="import-button" onClick={() => void loadProjects()}>刷新项目</button>
+
+            {projects.length > 0 && (
+              <div className="mapping-layout">
+                <div className="mapping-projects">
+                  <div className="section-heading"><h2>项目</h2></div>
+                  {projects.map((p) => (
+                    <button
+                      key={p.id}
+                      className={p.id === selectedProjectId ? "nav-item active" : "nav-item"}
+                      onClick={() => void selectProject(p.id)}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+                {selectedProjectId && (
+                  <div className="mapping-editor">
+                    <form className="jd-form" onSubmit={(event) => void buildTree(event)}>
+                      <input value={mappingLabel} onChange={(e) => setMappingLabel(e.target.value)} placeholder="快照标签（可选）" aria-label="快照标签" />
+                      <textarea value={mappingText} onChange={(e) => setMappingText(e.target.value)} placeholder={"用缩进表示层级：\n字节跳动\n  技术部\n    后端组\n腾讯"} aria-label="建树文本" />
+                      <button type="submit">生成组织树</button>
+                    </form>
+                    {snapshots.length > 0 && (
+                      <div className="mapping-snapshots">
+                        <div className="section-heading"><h2>快照</h2></div>
+                        {snapshots.map((s) => (
+                          <div key={s.id} className="case-row">
+                            <button className="nav-item" onClick={() => void loadTree(s.id)}>
+                              {s.label}{s.is_current ? "（当前）" : ""}
+                            </button>
+                            <button className="detail-button" onClick={() => void api.exportMappingTree(s.id)}>导出</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {tree.length > 0 && (
+              <div className="results-card">
+                <div className="section-heading"><h2>组织树</h2></div>
+                <MappingTreeView nodes={tree} />
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeNav === 5 && (
+          <section className="jd-panel">
+            <form className="jd-form" onSubmit={(event) => void searchBd(event)}>
+              <input value={bdQuery} onChange={(e) => setBdQuery(e.target.value)} placeholder="搜索：如「Java 工程师 招聘 上海」" aria-label="BD 搜索" />
+              <button type="submit">搜索线索</button>
+            </form>
+            {bdLeads.length === 0 ? (
+              <div className="empty-state"><strong>暂无线索</strong><p>输入关键词搜索潜在客户与招聘需求。</p></div>
+            ) : (
+              <div className="results-card">
+                <div className="section-heading"><h2>线索</h2><span>{bdLeads.length} 条</span></div>
+                <table>
+                  <thead><tr><th>公司</th><th>岗位</th><th>来源</th><th>状态</th></tr></thead>
+                  <tbody>
+                    {bdLeads.map((lead) => (
+                      <tr key={lead.id}>
+                        <td><strong>{lead.company_name}</strong></td>
+                        <td>{lead.job_title ?? "—"}</td>
+                        <td>{lead.source}</td>
+                        <td>{lead.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
         {activeNav === 6 && (
           <section className="jd-panel">
-            <div className="section-heading"><h2>健康检测台</h2><button className="import-button" onClick={() => void checkHealth()}>运行检测</button></div>
+            <form className="jd-form" onSubmit={(event) => void saveSettings(event)}>
+              <div className="section-heading">
+                <h2>模型 API 配置</h2>
+                <div className="case-actions">
+                  <button type="button" className="import-button" onClick={() => void loadSettings()}>加载</button>
+                  <button type="submit">保存并应用</button>
+                </div>
+              </div>
+
+              <div className="jd-row">
+                <input value={settings.deepseek_api_key ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_api_key: e.target.value })} placeholder="DeepSeek API Key" aria-label="DeepSeek API Key" />
+                <input value={settings.deepseek_model ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_model: e.target.value })} placeholder="DeepSeek 模型" aria-label="DeepSeek 模型" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.siliconflow_api_key ?? ""} onChange={(e) => setSettings({ ...settings, siliconflow_api_key: e.target.value })} placeholder="SiliconFlow API Key" aria-label="SiliconFlow API Key" />
+                <input value={settings.tavily_api_key ?? ""} onChange={(e) => setSettings({ ...settings, tavily_api_key: e.target.value })} placeholder="Tavily API Key" aria-label="Tavily API Key" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.imap_host ?? ""} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} placeholder="IMAP 主机" aria-label="IMAP 主机" />
+                <input value={settings.imap_account ?? ""} onChange={(e) => setSettings({ ...settings, imap_account: e.target.value })} placeholder="IMAP 账号" aria-label="IMAP 账号" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.imap_auth_code ?? ""} onChange={(e) => setSettings({ ...settings, imap_auth_code: e.target.value })} placeholder="IMAP 授权码" aria-label="IMAP 授权码" />
+                <input value={settings.imap_whitelist ?? ""} onChange={(e) => setSettings({ ...settings, imap_whitelist: e.target.value })} placeholder="发件人白名单（逗号分隔）" aria-label="发件人白名单" />
+              </div>
+            </form>
+
+            <div className="section-heading" style={{ marginTop: 20 }}><h2>健康检测台</h2><button className="import-button" onClick={() => void checkHealth()}>运行检测</button></div>
             {health && (
               <div className="health-grid">
                 {Object.entries(health).map(([name, component]) => (
@@ -311,6 +837,28 @@ export function App({ api }: { api: RecruitmentApi }) {
                 ))}
               </div>
             )}
+
+            <div className="case-section">
+              <div className="section-heading">
+                <h2>回收站</h2>
+                <button className="import-button" onClick={() => void loadDeleted()}>加载回收站</button>
+              </div>
+              {deletedItems.length === 0 ? (
+                <p className="muted">暂无已删除的候选人或岗位</p>
+              ) : (
+                <div className="case-events">
+                  {deletedItems.map((item) => (
+                    <div key={`${item.entity_type}-${item.entity_id}`} className="case-row">
+                      <div>
+                        <strong>{item.label}</strong>
+                        <small>{item.entity_type === "candidate" ? "候选人" : "岗位"}</small>
+                      </div>
+                      <button className="detail-button" onClick={() => void restoreItem(item)}>恢复</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </section>
         )}
       </main>
@@ -326,8 +874,78 @@ export function App({ api }: { api: RecruitmentApi }) {
             <div><small>当前地点</small><strong>{selected.location ?? "待核验"}</strong></div>
             <div><small>融合得分</small><strong>{selected.score.toFixed(3)}</strong></div>
           </div>
+
+          {reverseMatches.length > 0 && (
+            <section className="case-section" aria-label="潜在匹配岗位">
+              <h3>潜在匹配岗位</h3>
+              {reverseMatches.map((match) => (
+                <div key={match.jd_id} className="case-row">
+                  <div>
+                    <strong>{match.title}</strong>
+                    <small>{match.company} · 得分 {match.score.toFixed(3)}</small>
+                  </div>
+                  <button className="detail-button" onClick={() => void createCaseFromReverse(match)}>建流程</button>
+                </div>
+              ))}
+            </section>
+          )}
+
+          <section className="case-section" aria-label="招聘流程">
+            <h3>招聘流程</h3>
+            {selectedCases.length === 0 ? (
+              <p className="muted">暂无进行中的流程</p>
+            ) : (
+              selectedCases.map((caseItem) => (
+                <div key={caseItem.id} className="case-row">
+                  <div>
+                    <strong>{caseItem.stage}</strong>
+                    <small>{caseItem.note ?? ""}</small>
+                  </div>
+                  <div className="case-actions">
+                    <select
+                      aria-label="推进阶段"
+                      value={caseItem.stage}
+                      onChange={(event) => void advanceStage(caseItem.id, event.target.value)}
+                    >
+                      {STAGES.map((stage) => (
+                        <option key={stage} value={stage}>{stage}</option>
+                      ))}
+                    </select>
+                    <button className="detail-button" onClick={() => void loadCaseEvents(caseItem.id)}>记录</button>
+                    <button className="detail-button" onClick={() => void undoStage(caseItem.id)}>撤销</button>
+                  </div>
+                </div>
+              ))
+            )}
+
+            {activeCaseId && caseEvents.length > 0 && (
+              <div className="case-events">
+                {caseEvents.map((event) => (
+                  <div key={event.id}>
+                    <strong>{event.stage}</strong>
+                    {event.note && <span> · {event.note}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </aside>
       )}
     </div>
+  );
+}
+
+
+function MappingTreeView({ nodes }: { nodes: MappingTreeNode[] }) {
+  if (nodes.length === 0) return null;
+  return (
+    <ul className="mapping-tree">
+      {nodes.map((node) => (
+        <li key={node.id}>
+          <span>{node.name}</span>
+          {node.children.length > 0 && <MappingTreeView nodes={node.children} />}
+        </li>
+      ))}
+    </ul>
   );
 }

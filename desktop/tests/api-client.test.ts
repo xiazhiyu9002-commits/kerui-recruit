@@ -57,4 +57,57 @@ describe("ApiClient", () => {
       "仅支持 PDF、DOC 和 DOCX 简历"
     );
   });
+
+  test("diagnostics requests the correct path", async () => {
+    let received: Request | undefined;
+    const fetcher: typeof fetch = async (input, init) => {
+      received = new Request(input, init);
+      return new Response(JSON.stringify({
+        sqlite_version: "3.45.3",
+        database_path: "/tmp/db",
+        database_size_bytes: 1024,
+        counts: {},
+        pragmas: {}
+      }), { headers: { "Content-Type": "application/json" }, status: 200 });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.diagnostics();
+
+    expect(received?.url).toBe("http://127.0.0.1:43127/api/diagnostics");
+  });
+
+  test("buildMappingTree posts text and label to the project", async () => {
+    let received: Request | undefined;
+    const fetcher: typeof fetch = async (input, init) => {
+      received = new Request(input, init);
+      return new Response(JSON.stringify({ id: "snap-1", label: "v1", is_current: true }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.buildMappingTree("proj-1", "字节跳动\n  技术部", "v1");
+
+    expect(received?.url).toBe("http://127.0.0.1:43127/api/mapping/projects/proj-1/build-from-text");
+    expect(await received?.json()).toEqual({ text: "字节跳动\n  技术部", label: "v1" });
+  });
+
+  test("searchBdLeads posts query and limit", async () => {
+    let received: Request | undefined;
+    const fetcher: typeof fetch = async (input, init) => {
+      received = new Request(input, init);
+      return new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.searchBdLeads("Java 工程师", 20);
+
+    expect(received?.url).toBe("http://127.0.0.1:43127/api/bd/search");
+    expect(await received?.json()).toEqual({ query: "Java 工程师", limit: 20 });
+  });
 });
