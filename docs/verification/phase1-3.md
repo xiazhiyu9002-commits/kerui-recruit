@@ -45,6 +45,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 
 - **检索性能门槛**：`pytest tests/performance -m performance` 在 12,000 候选规模通过（p95 ≤ 1.5s、p99 ≤ 2.5s、Recall@300 ≥ 98%）。
 - **便携备份**：`PortableBackupService` 将 db / search / blobs / config 打包为单一 `.krbackup`（含 SHA-256 清单），用口令派生密钥（PBKDF2-SHA256 + Fernet）加密，恢复到新目录并逐文件校验哈希（`tests/backup/test_portable_backup.py`，含错误口令拒绝测试）。
+- **自动增量备份**：后台调度器每日生成 SQLite 快照并按「7 每日 + 4 每周」轮换清理（`BackupService.prune` + `SchedulerService.backup_tick`）。
 
 ## 尚未在本机闭环的验收项
 
@@ -55,8 +56,6 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 2. **浏览器端 E2E**（spec 12.1）：`search.spec.ts` 与 `workflow.spec.ts` 需打包后的 Tauri 壳与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环、壳层启动/退出冒烟与安装包构建。
 
 3. **真实/脱敏样本验收**（spec 12.2.4）：需真实简历样本走通解析、去重、版本、搜索、匹配、导出全链路。
-
-4. **自动增量备份轮换**（spec 10）：`BackupService` 已提供 SQLite 快照与恢复；7 每日 + 4 每周的自动增量轮换策略尚未实现。
 
 ## CI
 
