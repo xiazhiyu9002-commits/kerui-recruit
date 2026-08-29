@@ -15,6 +15,7 @@ from kerui_recruit.api.resumes import router as resumes_router
 from kerui_recruit.api.search import router as search_router
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.api.tasks import router as tasks_router
+from kerui_recruit.health.service import HealthService
 from kerui_recruit.resumes.ingest import UnsupportedResumeType
 
 
@@ -84,6 +85,10 @@ def create_app(
         @app.get("/health/ready")
         def ready() -> dict[str, str]:
             return {"status": "ready"}
+
+        @app.get("/health/checks")
+        def checks() -> dict[str, dict]:
+            return HealthService(services).check()
 
         app.include_router(resumes_router)
         app.include_router(tasks_router)
