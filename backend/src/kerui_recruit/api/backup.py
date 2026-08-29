@@ -53,6 +53,7 @@ def restore_snapshot(filename: str, request: Request) -> RestoreResponse:
 
 class CreatePortableRequest(BaseModel):
     target_path: str
+    passphrase: str
 
 
 class CreatePortableResponse(BaseModel):
@@ -62,6 +63,7 @@ class CreatePortableResponse(BaseModel):
 class RestorePortableRequest(BaseModel):
     backup_path: str
     target_root: str
+    passphrase: str
 
 
 class RestorePortableResponse(BaseModel):
@@ -74,7 +76,10 @@ class RestorePortableResponse(BaseModel):
 @router.post("/portable", response_model=CreatePortableResponse)
 def create_portable(command: CreatePortableRequest, request: Request) -> CreatePortableResponse:
     services: AppServices = request.app.state.services
-    path = services.portable_backup_service.create(Path(command.target_path))
+    path = services.portable_backup_service.create(
+        Path(command.target_path),
+        command.passphrase,
+    )
     return CreatePortableResponse(path=str(path))
 
 
@@ -84,6 +89,7 @@ def restore_portable(command: RestorePortableRequest, request: Request) -> Resto
     report: PortableRestoreReport = services.portable_backup_service.restore(
         Path(command.backup_path),
         Path(command.target_root),
+        command.passphrase,
     )
     return RestorePortableResponse(
         target_root=report.target_root,
