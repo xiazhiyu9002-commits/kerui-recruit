@@ -226,7 +226,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     worker = TaskWorker(
         repository=repository,
         worker_id=f"desktop-{uuid4()}",
-        queues=("interactive", "batch"),
+        queues=("interactive", "normal", "batch", "export"),
         handlers={"PARSE_RESUME": parse_resume},
     )
     return RuntimeComponents(services=services, pipeline=pipeline, worker=worker, providers=providers)

@@ -27,6 +27,7 @@ class IngestResume:
     content: bytes
     display_name: str | None = None
     candidate_id: str | None = None
+    queue_name: str = "batch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +87,7 @@ class ResumeIngestService:
             self.session.flush()
             task = TaskRecord(
                 task_type="PARSE_RESUME",
-                queue_name="batch",
+                queue_name=command.queue_name,
                 priority=10,
                 payload={"revision_id": revision.id},
                 idempotency_key=f"PARSE_RESUME:{revision.id}:v1",

@@ -72,3 +72,16 @@ def test_unsupported_file_type_is_rejected_before_writing(tmp_path: Path) -> Non
 
     assert error.value.code == "E_FILE_TYPE_UNSUPPORTED"
     assert list((tmp_path / "blobs").rglob("*.*")) == []
+
+
+def test_ingest_routes_to_configured_queue(tmp_path: Path) -> None:
+    """Interactive uploads must land in the fast queue, not the batch queue."""
+    service, session = make_service(tmp_path)
+    with session:
+        result = service.ingest(
+            IngestResume(filename="张三.pdf", content=b"pdf", queue_name="interactive")
+        )
+        task = session.get(TaskRecord, result.task_id)
+
+        assert task is not None
+        assert task.queue_name == "interactive"

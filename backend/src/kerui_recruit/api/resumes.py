@@ -43,7 +43,7 @@ async def import_resume(request: Request, file: UploadFile = File(...)) -> Impor
     filename = file.filename or "resume"
     with services.session_factory() as session:
         result = ResumeIngestService(session, services.blob_store).ingest(
-            IngestResume(filename=filename, content=content)
+            IngestResume(filename=filename, content=content, queue_name="interactive")
         )
     return ImportResumeResponse(**asdict(result))
 
@@ -71,7 +71,7 @@ def import_folder(command: ImportFolderRequest, request: Request) -> ImportFolde
                 continue
             with services.session_factory() as session:
                 result = ResumeIngestService(session, services.blob_store).ingest(
-                    IngestResume(filename=path.name, content=content)
+                    IngestResume(filename=path.name, content=content, queue_name="normal")
                 )
             imported.append(ImportResumeResponse(**asdict(result)))
         except Exception as exc:  # noqa: BLE001 - report per-file failures
