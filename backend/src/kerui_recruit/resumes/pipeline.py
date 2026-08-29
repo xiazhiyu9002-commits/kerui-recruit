@@ -109,6 +109,7 @@ class ResumePipeline:
                 highest_degree=normalized.highest_degree,
                 location=normalized.location,
                 candidate_status="AVAILABLE",
+                qs_rank=normalized.qs_rank,
             )
             for content, vector in zip(contents, vectors, strict=True)
         )
@@ -171,6 +172,10 @@ class ResumePipeline:
                 resume.summary,
                 resume.highest_degree or "",
                 str(resume.total_years or ""),
+                resume.school or "",
+                f"QS{resume.qs_rank}" if resume.qs_rank else "",
+                str(resume.graduation_year or ""),
+                resume.industry or "",
                 " ".join(resume.skills),
             )
             if value

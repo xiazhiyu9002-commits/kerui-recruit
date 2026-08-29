@@ -50,6 +50,7 @@ class LocalResumeParser:
         "React", "Vue", "SQL", "金融", "风控", "支付", "招聘", "销售"
     )
     locations = ("北京", "上海", "深圳", "广州", "杭州", "成都", "Hong Kong")
+    industries = ("互联网", "金融", "制造", "零售", "教育", "医疗", "房地产", "汽车")
 
     async def parse_resume(self, text: str) -> ParsedResume:
         compact = " ".join(text.split())
@@ -69,6 +70,10 @@ class LocalResumeParser:
             (item for item in self.locations if item.casefold() in compact.casefold()),
             None,
         )
+        industry = next(
+            (item for item in self.industries if item.casefold() in compact.casefold()),
+            None,
+        )
         skills = [
             item for item in self.skill_terms if item.casefold() in compact.casefold()
         ]
@@ -78,6 +83,7 @@ class LocalResumeParser:
             total_years=total_years,
             highest_degree=degree,
             location=location,
+            industry=industry,
             skills=skills,
             summary=compact[:1_000],
         )

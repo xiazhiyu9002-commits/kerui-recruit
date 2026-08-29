@@ -22,6 +22,10 @@ class ParsedResume(BaseModel):
     total_years: float | None = Field(default=None, ge=0, le=80)
     highest_degree: str | None = None
     location: str | None = None
+    school: str | None = None
+    qs_rank: int | None = Field(default=None, ge=1)
+    graduation_year: int | None = Field(default=None, ge=1900, le=2100)
+    industry: str | None = None
     skills: list[str] = Field(default_factory=list)
     summary: str = ""
     experiences: list[ParsedExperience] = Field(default_factory=list)
@@ -50,6 +54,10 @@ class NormalizedResume(BaseModel):
     total_years: Decimal | None
     highest_degree: str | None
     location: str | None
+    school: str | None = None
+    qs_rank: int | None = None
+    graduation_year: int | None = None
+    industry: str | None = None
     skills: tuple[str, ...]
     summary: str
     experiences: tuple[NormalizedExperience, ...]

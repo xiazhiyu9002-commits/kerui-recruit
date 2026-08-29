@@ -127,6 +127,7 @@ class LanceDBSearchIndex:
                     total_years=row.get("total_years"),
                     highest_degree=row.get("highest_degree"),
                     location=row.get("location"),
+                    qs_rank=row.get("qs_rank"),
                 )
             )
             if len(hits) >= limit:
@@ -148,6 +149,7 @@ class LanceDBSearchIndex:
             "highest_degree": chunk.highest_degree,
             "location": chunk.location,
             "candidate_status": chunk.candidate_status,
+            "qs_rank": chunk.qs_rank,
         }
 
     def _table_exists(self) -> bool:
@@ -169,6 +171,7 @@ class LanceDBSearchIndex:
                 pa.field("highest_degree", pa.string()),
                 pa.field("location", pa.string()),
                 pa.field("candidate_status", pa.string(), nullable=False),
+                pa.field("qs_rank", pa.int64()),
             ]
         )
 
@@ -185,6 +188,8 @@ class LanceDBSearchIndex:
             clauses.append(
                 f"candidate_status = {cls._quote(filters.candidate_status)}"
             )
+        if filters.max_qs_rank is not None:
+            clauses.append(f"qs_rank <= {int(filters.max_qs_rank)}")
         return " AND ".join(clauses)
 
     @staticmethod

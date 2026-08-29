@@ -31,3 +31,25 @@ def test_hard_filters_never_leak_nonmatching_candidates(tmp_path: Path) -> None:
     )
 
     assert [hit.candidate_id for hit in hits] == ["one"]
+
+
+def test_qs_rank_hard_filter_excludes_high_ranked_candidates(tmp_path: Path) -> None:
+    """QS is a hard condition; candidates beyond the cap must be filtered at retrieval time."""
+    index = LanceDBSearchIndex(tmp_path / "search", vector_dimension=2)
+    index.upsert(
+        [
+            SearchChunk("one", "one", "r1", "Python", (1.0, 0.0), 5, "MASTER", "上海", "AVAILABLE", 25),
+            SearchChunk("two", "two", "r2", "Python", (1.0, 0.0), 5, "MASTER", "上海", "AVAILABLE", 150),
+        ]
+    )
+
+    hits = index.search(
+        SearchRequest(
+            query="Python",
+            query_vector=(1.0, 0.0),
+            filters=CandidateFilters(max_qs_rank=100),
+            limit=100,
+        )
+    )
+
+    assert [hit.candidate_id for hit in hits] == ["one"]

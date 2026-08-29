@@ -15,6 +15,7 @@ class SearchChunk:
     highest_degree: str | None
     location: str | None
     candidate_status: str
+    qs_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class CandidateFilters:
     highest_degree: str | None = None
     location: str | None = None
     candidate_status: str | None = "AVAILABLE"
+    max_qs_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,7 @@ class SearchHit:
     total_years: float | None
     highest_degree: str | None
     location: str | None
+    qs_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -59,6 +59,10 @@ def normalize_resume(parsed: ParsedResume) -> NormalizedResume:
         total_years=years,
         highest_degree=normalized_degree,
         location=_clean(parsed.location),
+        school=_clean(parsed.school),
+        qs_rank=parsed.qs_rank,
+        graduation_year=parsed.graduation_year,
+        industry=_clean(parsed.industry),
         skills=_unique_skills(parsed.skills),
         summary=_clean(parsed.summary) or "",
         experiences=tuple(

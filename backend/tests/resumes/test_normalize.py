@@ -25,3 +25,22 @@ def test_resume_normalization_trims_deduplicates_and_maps_enums() -> None:
     assert normalized.skills == ("Python", "金融风控")
     assert normalized.summary == "金融科技后端工程师"
     assert normalized.experiences[0].company == "示例科技"
+
+
+def test_resume_normalization_passes_school_qs_graduation_and_industry() -> None:
+    """School tier and QS ranking must survive normalization for hard filters."""
+    normalized = normalize_resume(
+        ParsedResume(
+            name="张三",
+            highest_degree="硕士",
+            school=" 清华大学 ",
+            qs_rank=25,
+            graduation_year=2018,
+            industry=" 互联网 ",
+        )
+    )
+
+    assert normalized.school == "清华大学"
+    assert normalized.qs_rank == 25
+    assert normalized.graduation_year == 2018
+    assert normalized.industry == "互联网"

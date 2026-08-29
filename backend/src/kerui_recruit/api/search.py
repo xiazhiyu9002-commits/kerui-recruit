@@ -13,6 +13,7 @@ class CandidateFiltersRequest(BaseModel):
     highest_degree: str | None = None
     location: str | None = None
     candidate_status: str | None = "AVAILABLE"
+    max_qs_rank: int | None = Field(default=None, ge=1)
 
 
 class CandidateSearchRequest(BaseModel):
@@ -30,6 +31,7 @@ class CandidateSearchItem(BaseModel):
     total_years: float | None
     highest_degree: str | None
     location: str | None
+    qs_rank: int | None = None
 
 
 class CandidateSearchResponse(BaseModel):
@@ -59,6 +61,7 @@ async def search_candidates(
                 total_years=hit.total_years,
                 highest_degree=hit.highest_degree,
                 location=hit.location,
+                qs_rank=hit.qs_rank,
             )
             for hit in page.items
         ],
