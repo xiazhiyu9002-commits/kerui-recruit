@@ -1,0 +1,33 @@
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+build/
+
+# Node / Tauri
+node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+recruit_data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.krbackup
+logs/
+
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
