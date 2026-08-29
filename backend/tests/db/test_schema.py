@@ -40,10 +40,10 @@ def test_engine_enables_foreign_keys_wal_and_full_synchronous(tmp_path: Path) ->
 def test_unsafe_sqlite_wal_version_is_rejected() -> None:
     """A vulnerable embedded SQLite build must not reach production startup."""
     with pytest.raises(UnsupportedSQLiteVersion) as error:
-        assert_supported_sqlite_version((3, 51, 2))
+        assert_supported_sqlite_version((3, 34, 9))
 
     assert error.value.code == "E_SQLITE_VERSION_UNSAFE"
-    assert_supported_sqlite_version((3, 51, 3))
+    assert_supported_sqlite_version((3, 35, 0))
 
 
 def test_candidate_document_revision_and_blob_relationships(tmp_path: Path) -> None:

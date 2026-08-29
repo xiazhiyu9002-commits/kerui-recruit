@@ -10,6 +10,8 @@ import uvicorn
 from pydantic import SecretStr
 
 from kerui_recruit.core.settings import Settings
+from kerui_recruit.core.settings_store import SettingsStore
+from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.runtime import create_runtime_app
 
 
@@ -42,26 +44,92 @@ def _secret(name: str) -> SecretStr | None:
     return SecretStr(value) if value else None
 
 
+_SENSITIVE = frozenset(
+    {
+        "deepseek_api_key",
+        "siliconflow_api_key",
+        "tavily_api_key",
+        "imap_auth_code",
+        "smtp_auth_code",
+    }
+)
+
+
+def _read_stored_settings(data_root: Path) -> dict:
+    """Read the settings page's JSON file and decrypt its secrets."""
+    config_dir = data_root / "config"
+    data = SettingsStore(config_dir / "settings.json").load()
+    if not data:
+        return {}
+
+    encryption = EncryptionService(key_path=str(config_dir / "encryption.key"))
+    result: dict = {}
+    for key, value in data.items():
+        if key in _SENSITIVE and value:
+            try:
+                result[key] = encryption.decrypt(value)
+            except Exception:
+                continue
+        else:
+            result[key] = value
+    return result
+
+
 def build_settings(options: RuntimeArgs) -> Settings:
+    stored = _read_stored_settings(options.data_root)
+
+    def value(stored_key: str, env_name: str, default: str | None = None) -> str | None:
+        if stored_key in stored and stored[stored_key]:
+            return stored[stored_key]
+        return os.environ.get(env_name, default)
+
+    def secret_value(stored_key: str, env_name: str) -> SecretStr | None:
+        if stored_key in stored and stored[stored_key]:
+            return SecretStr(stored[stored_key])
+        return _secret(env_name)
+
     return Settings(
         data_root=options.data_root,
         session_token=options.token,
-        deepseek_api_key=_secret("DEEPSEEK_API_KEY"),
-        deepseek_base_url=os.environ.get(
-            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
-        ),
-        deepseek_model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-        siliconflow_api_key=_secret("SILICONFLOW_API_KEY"),
-        siliconflow_base_url=os.environ.get(
-            "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"
-        ),
-        siliconflow_embedding_model=os.environ.get(
-            "SILICONFLOW_EMBEDDING_MODEL", "BAAI/bge-m3"
-        ),
-        siliconflow_reranker_model=os.environ.get(
-            "SILICONFLOW_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
-        ),
+        deepseek_api_key=secret_value("deepseek_api_key", "DEEPSEEK_API_KEY"),
+        deepseek_base_url=value("deepseek_base_url", "DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com",
+        deepseek_model=value("deepseek_model", "DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash",
+        siliconflow_api_key=secret_value("siliconflow_api_key", "SILICONFLOW_API_KEY"),
+        siliconflow_base_url=value("siliconflow_base_url", "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1") or "https://api.siliconflow.cn/v1",
+        siliconflow_embedding_model=value("siliconflow_embedding_model", "SILICONFLOW_EMBEDDING_MODEL", "BAAI/bge-m3") or "BAAI/bge-m3",
+        siliconflow_reranker_model=value("siliconflow_reranker_model", "SILICONFLOW_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3") or "BAAI/bge-reranker-v2-m3",
+        tavily_api_key=secret_value("tavily_api_key", "TAVILY_API_KEY"),
+        tavily_base_url=value("tavily_base_url", "TAVILY_BASE_URL", "https://api.tavily.com") or "https://api.tavily.com",
+        imap_host=value("imap_host", "IMAP_HOST"),
+        imap_account=value("imap_account", "IMAP_ACCOUNT"),
+        imap_auth_code=secret_value("imap_auth_code", "IMAP_AUTH_CODE"),
+        imap_whitelist=value("imap_whitelist", "IMAP_WHITELIST"),
+        smtp_host=value("smtp_host", "SMTP_HOST"),
+        smtp_port=_int_value(stored, "smtp_port", os.environ.get("SMTP_PORT"), 465),
+        smtp_account=value("smtp_account", "SMTP_ACCOUNT"),
+        smtp_auth_code=secret_value("smtp_auth_code", "SMTP_AUTH_CODE"),
+        smtp_ssl=_bool_value(stored, "smtp_ssl", os.environ.get("SMTP_SSL"), True),
+        reminder_to=value("reminder_to", "REMINDER_TO"),
     )
+
+
+def _int_value(stored: dict, key: str, env: object, default: int) -> int:
+    if key in stored and stored[key] is not None:
+        return int(stored[key])
+    if env is not None:
+        try:
+            return int(env)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def _bool_value(stored: dict, key: str, env: object, default: bool) -> bool:
+    if key in stored and stored[key] is not None:
+        return bool(stored[key])
+    if env is not None:
+        return str(env).lower() in ("1", "true", "yes", "on")
+    return default
 
 
 def main(arguments: Sequence[str] | None = None) -> None:

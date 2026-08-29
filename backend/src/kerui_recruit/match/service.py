@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from kerui_recruit.db.models import JdRevision
+from kerui_recruit.db.models import JdRevision, MatchResult, MatchRun
 from kerui_recruit.providers.contracts import EmbeddingProvider, RerankerProvider
 from kerui_recruit.search.contracts import (
     CandidateFilters,
@@ -110,6 +110,33 @@ class MatchService:
                 "years": year_score,
             },
         )
+
+    def record_run(self, *, revision_id: str, hits) -> str:
+        """Persist an immutable match_run snapshot with sub-scored results."""
+        context = self._revision(revision_id)
+        with self.session_factory() as session:
+            run = MatchRun(
+                trigger="JD_MATCH",
+                jd_revision_id=revision_id,
+                query_text=_query_text(context),
+            )
+            session.add(run)
+            session.flush()
+            for hit in hits:
+                score = self.score(revision_id, hit)
+                session.add(
+                    MatchResult(
+                        run=run,
+                        candidate_id=hit.candidate_id,
+                        resume_revision_id=hit.revision_id,
+                        jd_revision_id=revision_id,
+                        total_score=score.total,
+                        score_breakdown=score.breakdown,
+                        status="未处理",
+                    )
+                )
+            session.commit()
+            return run.id
 
     def _revision(self, revision_id: str) -> _JdContext:
         with self.session_factory() as session:

@@ -86,6 +86,7 @@ class ResumeRevision(IdMixin, Base):
     blob_id: Mapped[str] = mapped_column(ForeignKey("blob.id"), nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(512))
     status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     raw_text: Mapped[str | None] = mapped_column(Text)
@@ -264,3 +265,163 @@ class StageEvent(IdMixin, Base):
     stage: Mapped[str] = mapped_column(String(24), nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
     case: Mapped[CandidateJobCase] = relationship(back_populates="events")
+
+
+class MatchRun(IdMixin, Base):
+    __tablename__ = "match_run"
+
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    jd_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jd_revision.id", ondelete="SET NULL"),
+        index=True,
+    )
+    query_text: Mapped[str | None] = mapped_column(Text)
+    index_generation: Mapped[str | None] = mapped_column(String(64))
+    model_version: Mapped[str | None] = mapped_column(String(64))
+    results: Mapped[list[MatchResult]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class MatchResult(IdMixin, Base):
+    __tablename__ = "match_result"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('未处理','保留','短名单','排除')",
+            name="ck_match_result_status",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("match_run.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    candidate_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    case_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate_job_case.id", ondelete="SET NULL")
+    )
+    resume_revision_id: Mapped[str | None] = mapped_column(String(36))
+    jd_revision_id: Mapped[str | None] = mapped_column(String(36))
+    total_score: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    score_breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="未处理", nullable=False)
+    run: Mapped[MatchRun] = relationship(back_populates="results")
+
+
+class CorrectionLog(IdMixin, Base):
+    __tablename__ = "correction_log"
+
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    field_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    reverted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MappingProject(IdMixin, Base):
+    __tablename__ = "mapping_project"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    snapshots: Mapped[list[MappingSnapshot]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+
+class MappingSnapshot(IdMixin, Base):
+    __tablename__ = "mapping_snapshot"
+    __table_args__ = (
+        Index("ix_mapping_snapshot_current", "project_id", "is_current"),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("mapping_project.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    project: Mapped[MappingProject] = relationship(back_populates="snapshots")
+    nodes: Mapped[list[MappingNode]] = relationship(
+        back_populates="snapshot",
+        cascade="all, delete-orphan",
+    )
+
+
+class MappingNode(IdMixin, Base):
+    __tablename__ = "mapping_node"
+
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("mapping_snapshot.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("mapping_node.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extra_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    snapshot: Mapped[MappingSnapshot] = relationship(back_populates="nodes")
+    children: Mapped[list[MappingNode]] = relationship(
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        foreign_keys=[parent_id],
+    )
+    parent: Mapped[MappingNode | None] = relationship(
+        back_populates="children",
+        remote_side="MappingNode.id",
+    )
+
+
+class MailCursor(IdMixin, Base):
+    __tablename__ = "mail_cursor"
+
+    mailbox: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    last_uid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class Reminder(IdMixin, Base):
+    __tablename__ = "reminder"
+    __table_args__ = (
+        Index("ix_reminder_due", "remind_at", "dismissed"),
+    )
+
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BdLead(IdMixin, Base):
+    __tablename__ = "bd_lead"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('新线索','已联系','已定级','已存档')",
+            name="ck_bd_lead_status",
+        ),
+        Index("ix_bd_lead_status", "status"),
+    )
+
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    query: Mapped[str | None] = mapped_column(String(500), index=True)
+    company_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    job_title: Mapped[str | None] = mapped_column(String(500))
+    contact_name: Mapped[str | None] = mapped_column(Text)
+    contact_email: Mapped[str | None] = mapped_column(Text)
+    contact_phone: Mapped[str | None] = mapped_column(Text)
+    raw_snippet: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="新线索", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

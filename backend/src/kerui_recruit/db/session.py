@@ -11,7 +11,7 @@ class UnsupportedSQLiteVersion(RuntimeError):
 
 
 def assert_supported_sqlite_version(version: tuple[int, int, int]) -> None:
-    if version < (3, 51, 3):
+    if version < (3, 35, 0):
         raise UnsupportedSQLiteVersion(
             f"SQLite {version[0]}.{version[1]}.{version[2]} is unsafe for WAL mode"
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -12,6 +13,31 @@ from kerui_recruit.resumes.normalize import normalize_resume
 from kerui_recruit.resumes.structured import NormalizedResume, ResumeParser
 from kerui_recruit.search.contracts import SearchChunk, SearchIndex
 from kerui_recruit.storage.blobs import BlobStore
+
+
+_DEGREE_SHORT = {
+    "博士": "博",
+    "硕士": "硕",
+    "本科": "本",
+    "大专": "专",
+    "PhD": "博",
+    "Master": "硕",
+    "Bachelor": "本",
+}
+
+
+def build_display_name(resume: NormalizedResume, suffix: str) -> str:
+    """Generate a human-readable resume display name from parsed fields."""
+    parts: list[str] = [resume.name or "未知"]
+    if resume.total_years is not None:
+        parts.append(f"{int(resume.total_years)}年")
+    degree = resume.highest_degree or ""
+    if degree:
+        parts.append(_DEGREE_SHORT.get(degree, degree))
+    skills = list(resume.skills)[:2]
+    if skills:
+        parts.append("+".join(skills))
+    return "-".join(parts) + suffix
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +126,9 @@ class ResumePipeline:
             revision.parsed_data = normalized.model_dump(mode="json")
             revision.parse_version = "resume-schema-v1"
             revision.status = "READY"
+            revision.display_name = build_display_name(
+                normalized, Path(revision.original_filename).suffix.lower()
+            )
         return PipelineResult(
             candidate_id=candidate_id,
             revision_id=revision_id,
