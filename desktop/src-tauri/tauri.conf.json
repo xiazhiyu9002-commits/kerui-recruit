@@ -26,6 +26,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "binaries/kerui-recruit-sidecar.exe"
+    ],
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"

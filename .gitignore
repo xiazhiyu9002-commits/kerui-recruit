@@ -15,6 +15,7 @@ node_modules/
 desktop/dist/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
 *.tsbuildinfo
 desktop/vite.config.js
 desktop/vite.config.d.ts

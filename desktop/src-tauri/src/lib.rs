@@ -80,7 +80,7 @@ fn default_data_root() -> PathBuf {
     }
 }
 
-fn resolve_sidecar_binary() -> PathBuf {
+fn resolve_sidecar_binary(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(path) = std::env::var("KERUI_SIDECAR_BIN") {
         return PathBuf::from(path);
     }
@@ -89,6 +89,22 @@ fn resolve_sidecar_binary() -> PathBuf {
     } else {
         "kerui-recruit-sidecar"
     };
+    // 1) Next to the current executable (dev / manual smoke placement).
+    if let Some(candidate) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+    {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // 2) Bundled resource directory (production install).
+    if let Ok(candidate) = app.path().resource_dir().map(|dir| dir.join(name)) {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // 3) Fallback next to the executable.
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
@@ -148,7 +164,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let config = RuntimeConfig::allocate()?;
-            let sidecar = resolve_sidecar_binary();
+            let sidecar = resolve_sidecar_binary(app.handle());
             let arguments = sidecar_arguments(
                 parse_port(&config.api_base_url)?,
                 config.session_token.clone(),
