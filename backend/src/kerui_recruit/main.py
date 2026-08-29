@@ -18,6 +18,7 @@ from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.jd import router as jd_router
 from kerui_recruit.api.mapping import router as mapping_router
 from kerui_recruit.api.match import router as match_router
+from kerui_recruit.api.migration import router as migration_router
 from kerui_recruit.api.reminders import router as reminders_router
 from kerui_recruit.api.resumes import router as resumes_router
 from kerui_recruit.api.search import router as search_router
@@ -115,5 +116,6 @@ def create_app(
         app.include_router(cases_router)
         app.include_router(dashboard_router)
         app.include_router(settings_router)
+        app.include_router(migration_router)
 
     return app

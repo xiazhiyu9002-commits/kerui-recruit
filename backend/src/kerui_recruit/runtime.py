@@ -31,6 +31,7 @@ from kerui_recruit.mail.sender import MailSender
 from kerui_recruit.mail.service import MailService
 from kerui_recruit.mapping.service import MappingService
 from kerui_recruit.match.service import MatchService
+from kerui_recruit.migration.service import MigrationService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.providers.leads import DeepSeekLeadExtractor
 from kerui_recruit.providers.websearch import NullWebSearchProvider, TavilyWebSearchProvider
@@ -165,6 +166,10 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         store=SettingsStore(settings.paths.config / "settings.json"),
         encryption=encryption_service,
     )
+    migration_service = MigrationService(
+        session_factory=factory,
+        current_root=settings.paths.root,
+    )
 
     services = AppServices(
         settings=settings,
@@ -187,12 +192,14 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         dashboard_service=dashboard_service,
         scheduler_service=scheduler_service,
         settings_service=settings_service,
+        migration_service=migration_service,
     )
     pipeline = ResumePipeline(
         session_factory=factory,
         blob_store=blob_store,
         parser=providers.parser,
         embedding_provider=providers.embedding,
+        ocr_provider=providers.ocr,
         search_index=index,
     )
 
@@ -215,6 +222,7 @@ def create_runtime_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         runtime.services.task_repository.recover_expired_leases()
+        runtime.services.search_service.warmup()
         worker_task = asyncio.create_task(_worker_loop(runtime.worker))
         scheduler_task = asyncio.create_task(
             runtime.services.scheduler_service.run_forever(interval_seconds=300)

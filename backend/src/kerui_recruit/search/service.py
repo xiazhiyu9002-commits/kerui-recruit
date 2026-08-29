@@ -22,6 +22,10 @@ class HybridSearchService:
         self.embedding_provider = embedding_provider
         self.reranker_provider = reranker_provider
 
+    def warmup(self) -> int:
+        """Preload the index and return the number of indexed chunks."""
+        return self.index.warmup()
+
     async def search(
         self,
         query: str,

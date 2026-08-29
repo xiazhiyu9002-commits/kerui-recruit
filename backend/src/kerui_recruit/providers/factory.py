@@ -6,8 +6,9 @@ import httpx
 
 from kerui_recruit.core.settings import Settings
 from kerui_recruit.jd.structured import JdParser
-from kerui_recruit.providers.contracts import EmbeddingProvider, RerankerProvider
+from kerui_recruit.providers.contracts import EmbeddingProvider, OCRProvider, RerankerProvider
 from kerui_recruit.providers.deepseek import DeepSeekJdParser, DeepSeekResumeParser
+from kerui_recruit.providers.ocr import OpenAICompatibleOCRProvider
 from kerui_recruit.providers.local import (
     LocalHashEmbeddingProvider,
     LocalJdParser,
@@ -29,6 +30,7 @@ class ProviderBundle:
     jd_parser: JdParser
     embedding: EmbeddingProvider
     reranker: RerankerProvider
+    ocr: OCRProvider | None
     vector_dimension: int
     http_client: httpx.AsyncClient | None
 
@@ -45,11 +47,21 @@ def build_providers(settings: Settings) -> ProviderBundle:
             jd_parser=LocalJdParser(),
             embedding=LocalHashEmbeddingProvider(dimension=LOCAL_VECTOR_DIMENSION),
             reranker=LocalKeywordReranker(),
+            ocr=None,
             vector_dimension=LOCAL_VECTOR_DIMENSION,
             http_client=None,
         )
 
     client = httpx.AsyncClient()
+
+    ocr: OCRProvider | None = None
+    if settings.llm_enabled:
+        ocr = OpenAICompatibleOCRProvider(
+            api_key=settings.deepseek_api_key.get_secret_value(),
+            client=client,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+        )
 
     parser: ResumeParser
     jd_parser: JdParser
@@ -94,6 +106,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
         jd_parser=jd_parser,
         embedding=embedding,
         reranker=reranker,
+        ocr=ocr,
         vector_dimension=vector_dimension,
         http_client=client,
     )

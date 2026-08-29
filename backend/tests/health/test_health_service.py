@@ -16,3 +16,4 @@ def test_health_reports_local_components(tmp_path: Path) -> None:
     assert report["database"]["status"] == "healthy"
     assert report["blob_store"]["status"] == "healthy"
     assert report["search"]["status"] == "healthy"
+    assert report["disk"]["status"] == "healthy"

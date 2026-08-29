@@ -61,6 +61,12 @@ class LanceDBSearchIndex:
             f"revision_id = {self._quote(revision_id)}"
         )
 
+    def warmup(self) -> int:
+        """Open the index table and return its row count to preload it."""
+        if not self._table_exists():
+            return 0
+        return self.database.open_table(self.table_name).count_rows()
+
     def search(self, request: SearchRequest) -> list[SearchHit]:
         if not self._table_exists():
             return []

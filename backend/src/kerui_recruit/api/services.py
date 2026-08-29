@@ -15,6 +15,7 @@ from kerui_recruit.export.service import ExportService
 from kerui_recruit.jd.pipeline import JdPipeline
 from kerui_recruit.mapping.service import MappingService
 from kerui_recruit.match.service import MatchService
+from kerui_recruit.migration.service import MigrationService
 from kerui_recruit.reminders.service import ReminderService
 from kerui_recruit.scheduler.service import SchedulerService
 from kerui_recruit.search.service import HybridSearchService
@@ -45,3 +46,4 @@ class AppServices:
     dashboard_service: DashboardService | None = None
     scheduler_service: SchedulerService | None = None
     settings_service: SettingsService | None = None
+    migration_service: MigrationService | None = None

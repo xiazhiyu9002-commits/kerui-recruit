@@ -58,3 +58,12 @@ def test_llm_only_keeps_local_search_providers() -> None:
     assert isinstance(bundle.embedding, LocalHashEmbeddingProvider)
     assert bundle.vector_dimension == LOCAL_VECTOR_DIMENSION
     _close(bundle)
+
+
+def test_ocr_provider_selected_only_with_llm_key() -> None:
+    offline = build_providers(_settings())
+    assert offline.ocr is None
+
+    online = build_providers(_settings(deepseek_api_key=SecretStr("ds-key")))
+    assert online.ocr is not None
+    _close(online)

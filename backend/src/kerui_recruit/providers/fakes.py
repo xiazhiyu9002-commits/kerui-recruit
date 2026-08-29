@@ -36,3 +36,10 @@ class FakeRerankerProvider:
             for index, document in enumerate(documents)
         ]
         return [index for _, index in sorted(scored, key=lambda item: (-item[0], item[1]))]
+
+
+class FakeOCRProvider:
+    """Deterministic OCR stub returning a fixed transcript."""
+
+    async def extract(self, content: bytes, filename: str) -> str:
+        return "张三 本科 6年 Java Python"
