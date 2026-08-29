@@ -13,7 +13,9 @@ from kerui_recruit.api.services import AppServices
 from kerui_recruit.core.settings import Settings
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.session import create_engine_for
+from kerui_recruit.jd.pipeline import JdPipeline
 from kerui_recruit.main import create_app
+from kerui_recruit.match.service import MatchService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
@@ -44,16 +46,27 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         vector_dimension=providers.vector_dimension,
     )
     repository = TaskRepository(factory)
+    search_service = HybridSearchService(
+        index=index,
+        embedding_provider=providers.embedding,
+        reranker_provider=providers.reranker,
+    )
+    match_service = MatchService(
+        session_factory=factory,
+        index=index,
+        embedding_provider=providers.embedding,
+        reranker_provider=providers.reranker,
+    )
+    jd_pipeline = JdPipeline(session_factory=factory, parser=providers.jd_parser)
+
     services = AppServices(
         settings=settings,
         session_factory=factory,
         blob_store=blob_store,
         task_repository=repository,
-        search_service=HybridSearchService(
-            index=index,
-            embedding_provider=providers.embedding,
-            reranker_provider=providers.reranker,
-        ),
+        search_service=search_service,
+        match_service=match_service,
+        jd_pipeline=jd_pipeline,
     )
     pipeline = ResumePipeline(
         session_factory=factory,

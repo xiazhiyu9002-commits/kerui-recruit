@@ -215,3 +215,52 @@ class JdRequirement(IdMixin, Base):
     label: Mapped[str] = mapped_column(String(64), nullable=False)
     value: Mapped[str] = mapped_column(String(500), nullable=False)
     revision: Mapped[JdRevision] = relationship(back_populates="requirements")
+
+
+class CandidateJobCase(IdMixin, Base):
+    __tablename__ = "candidate_job_case"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('待评估','待联系','已联系','有意向','已推荐','初试','复试','终试','Offer','入职','客户拒绝','候选人拒绝','暂缓','岗位关闭')",
+            name="ck_case_stage",
+        ),
+        Index("ix_case_candidate", "candidate_id"),
+        Index("ix_case_jd", "jd_id"),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    jd_id: Mapped[str] = mapped_column(
+        ForeignKey("jd.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage: Mapped[str] = mapped_column(String(24), default="待评估", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    candidate: Mapped[Candidate] = relationship()
+    jd: Mapped[Jd] = relationship()
+    events: Mapped[list[StageEvent]] = relationship(
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
+
+
+class StageEvent(IdMixin, Base):
+    __tablename__ = "stage_event"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('待评估','待联系','已联系','有意向','已推荐','初试','复试','终试','Offer','入职','客户拒绝','候选人拒绝','暂缓','岗位关闭')",
+            name="ck_stage_event_stage",
+        ),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate_job_case.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    case: Mapped[CandidateJobCase] = relationship(back_populates="events")

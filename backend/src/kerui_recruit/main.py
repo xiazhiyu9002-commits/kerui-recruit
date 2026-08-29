@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 from kerui_recruit.api.auth import valid_session
 from kerui_recruit.api.errors import ApiError
+from kerui_recruit.api.jd import router as jd_router
+from kerui_recruit.api.match import router as match_router
 from kerui_recruit.api.resumes import router as resumes_router
 from kerui_recruit.api.search import router as search_router
 from kerui_recruit.api.services import AppServices
@@ -86,5 +88,7 @@ def create_app(
         app.include_router(resumes_router)
         app.include_router(tasks_router)
         app.include_router(search_router)
+        app.include_router(jd_router)
+        app.include_router(match_router)
 
     return app
