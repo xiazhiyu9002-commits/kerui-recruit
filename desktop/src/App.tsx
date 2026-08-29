@@ -139,6 +139,30 @@ export interface AppSettings {
   imap_whitelist?: string;
 }
 
+export interface BackupSnapshot {
+  filename: string;
+  path: string;
+  size_bytes: string;
+  created: string;
+}
+
+export interface ReminderItem {
+  id: string;
+  title: string;
+  note: string | null;
+  remind_at: string;
+  dismissed: boolean;
+  dismissed_at: string | null;
+}
+
+export interface MigrationReport {
+  target_root: string;
+  files_copied: number;
+  files_verified: number;
+  candidate_count: number;
+  ok: boolean;
+}
+
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   getTask(taskId: string): Promise<TaskStatus>;
@@ -168,6 +192,14 @@ export interface RecruitmentApi {
   exportMappingTree(snapshotId: string): Promise<void>;
   getSettings(): Promise<AppSettings>;
   updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
+  exportMatchRun(runId: string): Promise<void>;
+  listBackups(): Promise<BackupSnapshot[]>;
+  createBackup(label?: string): Promise<{ filename: string; path: string }>;
+  restoreBackup(filename: string): Promise<{ restored_from: string; safety_backup: string }>;
+  listReminders(): Promise<ReminderItem[]>;
+  createReminder(input: { title: string; remind_at: string; note?: string }): Promise<ReminderItem>;
+  dismissReminder(id: string): Promise<ReminderItem>;
+  migrateData(targetRoot: string): Promise<MigrationReport>;
 }
 
 
@@ -241,6 +273,18 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   // 设置
   const [settings, setSettings] = useState<AppSettings>({});
+
+  // 备份与恢复
+  const [backups, setBackups] = useState<BackupSnapshot[]>([]);
+
+  // 提醒
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  const [reminderTitle, setReminderTitle] = useState("");
+  const [reminderAt, setReminderAt] = useState("");
+
+  // 数据迁移
+  const [migrationTarget, setMigrationTarget] = useState("");
+  const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -499,6 +543,92 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function exportMatch(runId: string) {
+    setError(null);
+    try {
+      await api.exportMatchRun(runId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "导出失败");
+    }
+  }
+
+  async function loadBackups() {
+    setError(null);
+    try {
+      setBackups(await api.listBackups());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "备份列表加载失败");
+    }
+  }
+
+  async function createBackup() {
+    setError(null);
+    try {
+      await api.createBackup();
+      setBackups(await api.listBackups());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建备份失败");
+    }
+  }
+
+  async function restoreBackupItem(filename: string) {
+    setError(null);
+    try {
+      await api.restoreBackup(filename);
+      setBackups(await api.listBackups());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "恢复失败");
+    }
+  }
+
+  async function loadReminders() {
+    setError(null);
+    try {
+      setReminders(await api.listReminders());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "提醒加载失败");
+    }
+  }
+
+  async function createReminderItem(event: FormEvent) {
+    event.preventDefault();
+    if (!reminderTitle.trim() || !reminderAt.trim()) return;
+    setError(null);
+    try {
+      const created = await api.createReminder({
+        title: reminderTitle.trim(),
+        remind_at: reminderAt,
+        note: ""
+      });
+      setReminders((current) => [created, ...current]);
+      setReminderTitle("");
+      setReminderAt("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建提醒失败");
+    }
+  }
+
+  async function dismissReminderItem(id: string) {
+    setError(null);
+    try {
+      await api.dismissReminder(id);
+      setReminders((current) => current.filter((r) => r.id !== id));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "处理提醒失败");
+    }
+  }
+
+  async function migrateData(event: FormEvent) {
+    event.preventDefault();
+    if (!migrationTarget.trim()) return;
+    setError(null);
+    try {
+      setMigrationReport(await api.migrateData(migrationTarget.trim()));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "数据迁移失败");
+    }
+  }
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const meta = event.metaKey || event.ctrlKey;
@@ -651,7 +781,11 @@ export function App({ api }: { api: RecruitmentApi }) {
             </form>
             {matchRun && (
               <div className="results-card">
-                <div className="section-heading"><h2>匹配结果</h2><span>{matchRun.items.length} 人</span></div>
+                <div className="section-heading">
+                  <h2>匹配结果</h2>
+                  <span>{matchRun.items.length} 人</span>
+                  <button className="detail-button" onClick={() => void exportMatch(matchRun.run_id)}>导出 Excel</button>
+                </div>
                 {matchRun.items.length === 0 ? (
                   <div className="empty-state"><strong>暂无匹配候选人</strong></div>
                 ) : (
@@ -856,6 +990,78 @@ export function App({ api }: { api: RecruitmentApi }) {
                       <button className="detail-button" onClick={() => void restoreItem(item)}>恢复</button>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            <div className="case-section">
+              <div className="section-heading">
+                <h2>提醒管理</h2>
+                <button className="import-button" onClick={() => void loadReminders()}>加载提醒</button>
+              </div>
+              <form className="jd-form" onSubmit={(event) => void createReminderItem(event)}>
+                <div className="jd-row">
+                  <input value={reminderTitle} onChange={(e) => setReminderTitle(e.target.value)} placeholder="提醒内容" aria-label="提醒内容" />
+                  <input value={reminderAt} onChange={(e) => setReminderAt(e.target.value)} type="datetime-local" aria-label="提醒时间" />
+                </div>
+                <button type="submit">添加提醒</button>
+              </form>
+              {reminders.length === 0 ? (
+                <p className="muted">暂无待处理提醒</p>
+              ) : (
+                <div className="case-events">
+                  {reminders.map((r) => (
+                    <div key={r.id} className="case-row">
+                      <div>
+                        <strong>{r.title}</strong>
+                        <small>{r.remind_at}</small>
+                      </div>
+                      <button className="detail-button" onClick={() => void dismissReminderItem(r.id)}>完成</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="case-section">
+              <div className="section-heading">
+                <h2>备份与恢复</h2>
+                <div className="case-actions">
+                  <button className="import-button" onClick={() => void loadBackups()}>加载备份</button>
+                  <button className="import-button" onClick={() => void createBackup()}>立即备份</button>
+                </div>
+              </div>
+              {backups.length === 0 ? (
+                <p className="muted">暂无备份快照</p>
+              ) : (
+                <div className="case-events">
+                  {backups.map((b) => (
+                    <div key={b.filename} className="case-row">
+                      <div>
+                        <strong>{b.filename}</strong>
+                        <small>{b.created}</small>
+                      </div>
+                      <button className="detail-button" onClick={() => void restoreBackupItem(b.filename)}>恢复</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="case-section">
+              <div className="section-heading"><h2>数据迁移</h2></div>
+              <form className="jd-form" onSubmit={(event) => void migrateData(event)}>
+                <input value={migrationTarget} onChange={(e) => setMigrationTarget(e.target.value)} placeholder="新数据目录（绝对路径）" aria-label="迁移目标目录" />
+                <button type="submit">复制并校验</button>
+              </form>
+              {migrationReport && (
+                <div className="case-events">
+                  <div className="case-row">
+                    <div>
+                      <strong>{migrationReport.ok ? "迁移校验通过" : "迁移校验未通过"}</strong>
+                      <small>{migrationReport.target_root} · {migrationReport.files_verified}/{migrationReport.files_copied} 文件 · {migrationReport.candidate_count} 候选人</small>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -87,7 +87,15 @@ function fakeApi(): RecruitmentApi {
     restoreDeleted: async () => ({ entity_type: "candidate", entity_id: "candidate-1", deleted: false }),
     exportMappingTree: async () => undefined,
     getSettings: async () => ({}),
-    updateSettings: async () => ({})
+    updateSettings: async () => ({}),
+    exportMatchRun: async () => undefined,
+    listBackups: async () => [],
+    createBackup: async () => ({ filename: "backup_1.sqlite3", path: "/tmp/backup_1.sqlite3" }),
+    restoreBackup: async () => ({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" }),
+    listReminders: async () => [],
+    createReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: false, dismissed_at: null }),
+    dismissReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: true, dismissed_at: "2026-08-29T10:00:00" }),
+    migrateData: async () => ({ target_root: "/tmp/new", files_copied: 3, files_verified: 3, candidate_count: 1, ok: true })
   };
 }
 

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   AppSettings,
+  BackupSnapshot,
   BdLead,
   CandidateSearchResult,
   CaseItem,
@@ -12,7 +13,9 @@ import type {
   MappingProject,
   MappingSnapshot,
   MappingTreeNode,
+  MigrationReport,
   RecruitmentApi,
+  ReminderItem,
   ReverseMatchItem,
   StageEventItem,
   TaskStatus
@@ -245,6 +248,71 @@ export class ApiClient implements RecruitmentApi {
       body: JSON.stringify(values),
       headers: { "Content-Type": "application/json" },
       method: "PUT"
+    });
+  }
+
+  async exportMatchRun(runId: string) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/match/run/${encodeURIComponent(runId)}/export`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw new Error("导出失败");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `match_${runId}.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  listBackups() {
+    return this.request<BackupSnapshot[]>("/api/backup/snapshots");
+  }
+
+  createBackup(label = "") {
+    return this.request<{ filename: string; path: string }>("/api/backup/snapshots", {
+      body: JSON.stringify({ label }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  restoreBackup(filename: string) {
+    return this.request<{ restored_from: string; safety_backup: string }>(
+      `/api/backup/restore/${encodeURIComponent(filename)}`,
+      { method: "POST" }
+    );
+  }
+
+  listReminders() {
+    return this.request<ReminderItem[]>("/api/reminders");
+  }
+
+  createReminder(input: { title: string; remind_at: string; note?: string }) {
+    return this.request<ReminderItem>("/api/reminders", {
+      body: JSON.stringify(input),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  dismissReminder(id: string) {
+    return this.request<ReminderItem>(
+      `/api/reminders/${encodeURIComponent(id)}/dismiss`,
+      { method: "POST" }
+    );
+  }
+
+  migrateData(targetRoot: string) {
+    return this.request<MigrationReport>("/api/migration", {
+      body: JSON.stringify({ target_root: targetRoot }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
     });
   }
 
