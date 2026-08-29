@@ -87,6 +87,7 @@ function fakeApi(): RecruitmentApi {
     listDeleted: async () => [],
     restoreDeleted: async () => ({ entity_type: "candidate", entity_id: "candidate-1", deleted: false }),
     exportMappingTree: async () => undefined,
+    exportMappingTreePdf: async () => undefined,
     getSettings: async () => ({}),
     updateSettings: async () => ({}),
     exportMatchRun: async () => undefined,

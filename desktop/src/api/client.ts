@@ -255,6 +255,25 @@ export class ApiClient implements RecruitmentApi {
     URL.revokeObjectURL(url);
   }
 
+  async exportMappingTreePdf(snapshotId: string) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/mapping/snapshots/${encodeURIComponent(snapshotId)}/export-pdf`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw new Error("导出失败");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `mapping_${snapshotId}.pdf`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   getSettings() {
     return this.request<AppSettings>("/api/settings");
   }

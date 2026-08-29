@@ -201,6 +201,7 @@ export interface RecruitmentApi {
   listDeleted(): Promise<DeletedItem[]>;
   restoreDeleted(entityType: string, entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
   exportMappingTree(snapshotId: string): Promise<void>;
+  exportMappingTreePdf(snapshotId: string): Promise<void>;
   getSettings(): Promise<AppSettings>;
   updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
   exportMatchRun(runId: string): Promise<void>;
@@ -958,7 +959,8 @@ export function App({ api }: { api: RecruitmentApi }) {
                             <button className="nav-item" onClick={() => void loadTree(s.id)}>
                               {s.label}{s.is_current ? "（当前）" : ""}
                             </button>
-                            <button className="detail-button" onClick={() => void api.exportMappingTree(s.id)}>导出</button>
+                            <button className="detail-button" onClick={() => void api.exportMappingTree(s.id)}>Excel</button>
+                            <button className="detail-button" onClick={() => void api.exportMappingTreePdf(s.id)}>PDF</button>
                           </div>
                         ))}
                       </div>
