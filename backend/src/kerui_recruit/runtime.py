@@ -165,6 +165,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         mail_ingest_service=mail_ingest_service,
         reminder_mail_service=reminder_mail_service,
         backup_service=backup_service,
+        soft_delete_service=soft_delete_service,
     )
 
     settings_service = SettingsService(

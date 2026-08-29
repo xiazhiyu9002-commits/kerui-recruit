@@ -13,6 +13,7 @@ from kerui_recruit.mail.ingest import MailIngestService
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.reminders.mail_service import ReminderMailService
 from kerui_recruit.reminders.service import ReminderService
+from kerui_recruit.soft_delete.service import SoftDeleteService
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class SchedulerService:
         mail_ingest_service: MailIngestService | None = None,
         reminder_mail_service: ReminderMailService | None = None,
         backup_service: BackupService | None = None,
+        soft_delete_service: SoftDeleteService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
@@ -49,6 +51,7 @@ class SchedulerService:
         self.mail_ingest_service = mail_ingest_service
         self.reminder_mail_service = reminder_mail_service
         self.backup_service = backup_service
+        self.soft_delete_service = soft_delete_service
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20
@@ -145,6 +148,12 @@ class SchedulerService:
             self.backup_service.create_snapshot(label="daily")
         self.backup_service.prune()
 
+    def purge_recycle_bin(self) -> None:
+        """Permanently remove recycle-bin items older than the retention window."""
+        if self.soft_delete_service is None:
+            return
+        self.soft_delete_service.purge_expired()
+
     async def run_forever(self, *, interval_seconds: int = 300) -> None:
         while True:
             try:
@@ -162,6 +171,10 @@ class SchedulerService:
                 pass
             try:
                 self.backup_tick()
+            except Exception:
+                pass
+            try:
+                self.purge_recycle_bin()
             except Exception:
                 pass
             await asyncio.sleep(interval_seconds)

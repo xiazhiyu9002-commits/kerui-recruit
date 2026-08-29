@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 
 class SoftDeleteService:
-    """Soft-delete and restore for Candidate and JD entities."""
+    """Soft-delete, restore and expiry purge for Candidate and JD entities."""
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
@@ -31,8 +32,6 @@ class SoftDeleteService:
 
     def list_deleted(self) -> list[dict]:
         """List soft-deleted candidates and JDs for the recycle bin."""
-        from sqlalchemy import select
-
         from kerui_recruit.db.models import Candidate, Jd
 
         with self.session_factory() as session:
@@ -63,6 +62,38 @@ class SoftDeleteService:
                 }
             )
         return items
+
+    def purge_expired(self, *, retention_days: int = 30) -> int:
+        """Permanently delete soft-deleted entities older than the retention."""
+        from kerui_recruit.db.models import Candidate, Jd
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        removed = 0
+        with self.session_factory() as session, session.begin():
+            jds = session.scalars(
+                select(Jd).where(Jd.deleted_at.is_not(None), Jd.deleted_at < cutoff)
+            ).all()
+            for jd in jds:
+                session.delete(jd)
+                removed += 1
+
+            candidates = session.scalars(
+                select(Candidate).where(
+                    Candidate.deleted_at.is_not(None),
+                    Candidate.deleted_at < cutoff,
+                )
+            ).all()
+            for candidate in candidates:
+                for document in candidate.documents:
+                    for revision in document.revisions:
+                        blob = revision.blob
+                        if blob is not None:
+                            blob.reference_count -= 1
+                            if blob.reference_count <= 0:
+                                session.delete(blob)
+                session.delete(candidate)
+                removed += 1
+        return removed
 
 
 def _lookup(session: Session, entity_type: str, entity_id: str) -> Any:
