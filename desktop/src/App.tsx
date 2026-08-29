@@ -212,6 +212,13 @@ const STAGES = [
   "客户拒绝", "候选人拒绝", "暂缓", "岗位关闭"
 ];
 
+const HEALTH_LABELS: Record<string, string> = {
+  database: "数据库",
+  blob_store: "原件库",
+  search: "检索引擎",
+  disk: "磁盘空间"
+};
+
 
 function taskLabel(task: TaskStatus): string {
   if (task.status === "SUCCESS") return "解析完成";
@@ -304,6 +311,25 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  function pollTask(taskId: string) {
+    async function run() {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        try {
+          const task = await api.getTask(taskId);
+          setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+          if (task.status === "SUCCESS" || task.status === "FAILED" || task.status === "DEAD_LETTER") {
+            return;
+          }
+        } catch {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    void run();
+  }
+
   async function uploadResume(file: File | undefined, files?: FileList | null) {
     const selected = files && files.length > 0 ? Array.from(files) : file ? [file] : [];
     if (selected.length === 0) return;
@@ -313,6 +339,7 @@ export function App({ api }: { api: RecruitmentApi }) {
         const imported = await api.importResume(item);
         const task = await api.getTask(imported.task_id);
         setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+        pollTask(imported.task_id);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "导入失败，请检查文件");
       }
@@ -328,6 +355,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       for (const imported of result.imported) {
         const task = await api.getTask(imported.task_id);
         setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+        pollTask(imported.task_id);
       }
       if (result.skipped.length > 0 || result.errors.length > 0) {
         setError(`已导入 ${result.imported.length} 个，跳过 ${result.skipped.length} 个，失败 ${result.errors.length} 个`);
@@ -989,7 +1017,7 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="health-grid">
                 {Object.entries(health).map(([name, component]) => (
                   <div key={name} className="health-card">
-                    <small>{name}</small>
+                    <small>{HEALTH_LABELS[name] ?? name}</small>
                     <strong className={component.status === "healthy" ? "ok" : "bad"}>{component.status === "healthy" ? "正常" : "异常"}</strong>
                     {component.message && <p>{component.message}</p>}
                   </div>

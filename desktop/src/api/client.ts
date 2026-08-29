@@ -38,7 +38,7 @@ export class ApiClient implements RecruitmentApi {
   constructor(
     baseUrl: string,
     private readonly sessionToken: string,
-    private readonly fetcher: typeof fetch = fetch
+    private readonly fetcher: typeof fetch = fetch.bind(globalThis)
   ) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
@@ -341,6 +341,15 @@ export class ApiClient implements RecruitmentApi {
 
 
 export async function createRuntimeApi(): Promise<RecruitmentApi> {
-  const config = await invoke<RuntimeConfig>("runtime_config");
+  let config: RuntimeConfig;
+  try {
+    config = await invoke<RuntimeConfig>("runtime_config");
+  } catch {
+    // Browser/Playwright fallback: reach a locally-run sidecar via env vars.
+    config = {
+      apiBaseUrl: import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:43127",
+      sessionToken: import.meta.env.VITE_SESSION_TOKEN ?? "0".repeat(64)
+    };
+  }
   return new ApiClient(config.apiBaseUrl, config.sessionToken);
 }
