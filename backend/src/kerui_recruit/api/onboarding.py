@@ -1,0 +1,22 @@
+from fastapi import APIRouter, Request
+
+from kerui_recruit.api.services import AppServices
+from kerui_recruit.health.service import HealthService
+
+router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+
+
+@router.get("/status")
+def onboarding_status(request: Request) -> dict:
+    """Aggregate first-run status: data root, provider configuration and health."""
+    services: AppServices = request.app.state.services
+    settings = services.settings
+    return {
+        "data_root": str(settings.paths.root),
+        "llm_enabled": settings.llm_enabled,
+        "search_enabled": settings.search_providers_enabled,
+        "bd_search_enabled": settings.bd_search_enabled,
+        "mail_enabled": settings.mail_enabled,
+        "smtp_enabled": settings.smtp_enabled,
+        "health": HealthService(services).check(),
+    }

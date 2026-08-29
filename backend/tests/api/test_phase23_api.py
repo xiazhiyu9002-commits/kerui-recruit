@@ -96,3 +96,13 @@ def test_bd_search_returns_empty_with_offline_provider(client: TestClient) -> No
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_onboarding_status_reports_configuration_and_health(client: TestClient) -> None:
+    resp = client.get("/api/onboarding/status", headers=_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data_root" in body
+    assert body["llm_enabled"] is False
+    assert body["search_enabled"] is False
+    assert body["health"]["database"]["status"] == "healthy"

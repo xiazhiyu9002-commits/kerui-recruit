@@ -20,6 +20,7 @@ from kerui_recruit.api.jd import router as jd_router
 from kerui_recruit.api.mapping import router as mapping_router
 from kerui_recruit.api.match import router as match_router
 from kerui_recruit.api.migration import router as migration_router
+from kerui_recruit.api.onboarding import router as onboarding_router
 from kerui_recruit.api.reminders import router as reminders_router
 from kerui_recruit.api.resumes import router as resumes_router
 from kerui_recruit.api.search import router as search_router
@@ -118,6 +119,7 @@ def create_app(
         app.include_router(dashboard_router)
         app.include_router(settings_router)
         app.include_router(migration_router)
+        app.include_router(onboarding_router)
 
     # Added last so CORS is outermost and answers preflight OPTIONS before the
     # session-token guard. The sidecar binds loopback only and authenticates
