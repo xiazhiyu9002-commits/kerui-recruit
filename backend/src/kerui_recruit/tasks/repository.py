@@ -195,6 +195,39 @@ class TaskRepository:
                 )
             return len(expired)
 
+    def cancel(self, task_id: str) -> None:
+        """Cancel a task that has not reached a terminal state."""
+        with self.session_factory() as session, session.begin():
+            task = session.get(TaskRecord, task_id)
+            if task is None:
+                raise LookupError(f"Task not found: {task_id}")
+            if task.status in ("SUCCESS", "CANCELLED", "DEAD_LETTER"):
+                return
+            previous = task.status
+            task.status = "CANCELLED"
+            task.lease_owner = None
+            task.lease_expires_at = None
+            task.next_retry_at = None
+            task.events.append(TaskEvent(from_status=previous, to_status="CANCELLED"))
+
+    def retry(self, task_id: str) -> None:
+        """Requeue a dead-lettered task for another attempt."""
+        with self.session_factory() as session, session.begin():
+            task = session.get(TaskRecord, task_id)
+            if task is None:
+                raise LookupError(f"Task not found: {task_id}")
+            if task.status not in ("FAILED", "DEAD_LETTER"):
+                return
+            previous = task.status
+            task.status = "QUEUED"
+            task.attempts = 0
+            task.error_code = None
+            task.error_message = None
+            task.lease_owner = None
+            task.lease_expires_at = None
+            task.next_retry_at = None
+            task.events.append(TaskEvent(from_status=previous, to_status="QUEUED"))
+
     @staticmethod
     def _owned_running_task(
         session: Session,

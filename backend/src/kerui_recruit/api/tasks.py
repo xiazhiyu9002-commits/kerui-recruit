@@ -34,3 +34,25 @@ def get_task(task_id: str, request: Request) -> TaskResponse:
         if task is None:
             raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
         return TaskResponse.model_validate(task, from_attributes=True)
+
+
+@router.post("/{task_id}/cancel", response_model=TaskResponse)
+def cancel_task(task_id: str, request: Request) -> TaskResponse:
+    services: AppServices = request.app.state.services
+    try:
+        services.task_repository.cancel(task_id)
+    except LookupError:
+        raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
+    with services.session_factory() as session:
+        return TaskResponse.model_validate(session.get(TaskRecord, task_id), from_attributes=True)
+
+
+@router.post("/{task_id}/retry", response_model=TaskResponse)
+def retry_task(task_id: str, request: Request) -> TaskResponse:
+    services: AppServices = request.app.state.services
+    try:
+        services.task_repository.retry(task_id)
+    except LookupError:
+        raise ApiError(404, "E_TASK_NOT_FOUND", "任务不存在")
+    with services.session_factory() as session:
+        return TaskResponse.model_validate(session.get(TaskRecord, task_id), from_attributes=True)

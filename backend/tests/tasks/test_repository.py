@@ -90,3 +90,32 @@ def test_heartbeat_and_completion_persist_state(tmp_path: Path) -> None:
         assert task.progress == 100
         assert task.result_ref == "exports/result.xlsx"
         assert task.lease_owner is None
+
+
+def test_cancel_requeued_task(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    task_id = repo.enqueue(
+        TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": "one"}, "parse:one")
+    )
+
+    repo.cancel(task_id)
+
+    with repo.session_factory() as session:
+        task = session.get(TaskRecord, task_id)
+        assert task.status == "CANCELLED"
+
+
+def test_retry_dead_letter_task(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    task_id = repo.enqueue(
+        TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": "one"}, "parse:one")
+    )
+    with repo.session_factory() as session, session.begin():
+        session.get(TaskRecord, task_id).status = "DEAD_LETTER"
+
+    repo.retry(task_id)
+
+    with repo.session_factory() as session:
+        task = session.get(TaskRecord, task_id)
+        assert task.status == "QUEUED"
+        assert task.error_code is None
