@@ -77,6 +77,11 @@ def test_mapping_project_and_tree(client: TestClient) -> None:
     assert roots[0]["name"] == "字节跳动"
     assert roots[0]["children"][0]["name"] == "技术部"
 
+    pdf = client.get(f"/api/mapping/snapshots/{sid}/export-pdf", headers=_headers())
+    assert pdf.status_code == 200
+    assert pdf.headers["content-type"] == "application/pdf"
+    assert pdf.content.startswith(b"%PDF")
+
 
 def test_backup_snapshot_list(client: TestClient) -> None:
     created = client.post("/api/backup/snapshots", json={"label": "手动备份"}, headers=_headers())

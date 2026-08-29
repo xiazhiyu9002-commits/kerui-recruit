@@ -104,6 +104,17 @@ def export_tree(snapshot_id: str, request: Request) -> Response:
     )
 
 
+@router.get("/snapshots/{snapshot_id}/export-pdf")
+def export_tree_pdf(snapshot_id: str, request: Request) -> Response:
+    services: AppServices = request.app.state.services
+    pdf_bytes = services.export_service.export_mapping_tree_pdf(snapshot_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="mapping_{snapshot_id}.pdf"'},
+    )
+
+
 @router.post("/projects/{project_id}/build-from-text", response_model=SnapshotResponse)
 def build_tree_from_text(
     project_id: str, command: BuildTreeRequest, request: Request

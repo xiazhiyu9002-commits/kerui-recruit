@@ -72,3 +72,37 @@ class ExportService:
         buffer = io.BytesIO()
         workbook.save(buffer)
         return buffer.getvalue()
+
+    def export_mapping_tree_pdf(self, snapshot_id: str) -> bytes:
+        """Render an org-tree snapshot as an indented PDF."""
+        import pymupdf
+
+        with self.session_factory() as session:
+            nodes = session.scalars(
+                select(MappingNode)
+                .where(MappingNode.snapshot_id == snapshot_id)
+                .order_by(MappingNode.sort_order)
+            ).all()
+
+        if not nodes:
+            raise LookupError(f"Mapping snapshot not found or empty: {snapshot_id}")
+
+        node_map = {node.id: node for node in nodes}
+
+        def depth(node: MappingNode) -> int:
+            level = 0
+            current = node
+            while current.parent_id and current.parent_id in node_map:
+                level += 1
+                current = node_map[current.parent_id]
+            return level
+
+        lines = [f"{'    ' * depth(node)}{node.name}" for node in nodes]
+        text = "\n".join(lines)
+
+        document = pymupdf.open()
+        page = document.new_page()
+        page.insert_text((72, 72), text, fontsize=11, fontname="china-s")
+        payload = document.tobytes()
+        document.close()
+        return payload
