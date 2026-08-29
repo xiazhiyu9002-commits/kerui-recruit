@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.search.contracts import CandidateFilters
+from kerui_recruit.search.query import parse_query
 
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -45,9 +46,11 @@ async def search_candidates(
     request: Request,
 ) -> CandidateSearchResponse:
     services: AppServices = request.app.state.services
+    parsed = parse_query(command.query)
+    explicit = CandidateFilters(**command.filters.model_dump())
     page = await services.search_service.search(
-        command.query,
-        CandidateFilters(**command.filters.model_dump()),
+        parsed.keywords,
+        _merge_filters(parsed.filters, explicit),
         limit=command.limit,
     )
     return CandidateSearchResponse(
@@ -66,4 +69,15 @@ async def search_candidates(
             for hit in page.items
         ],
         degraded_reasons=list(page.degraded_reasons),
+    )
+
+
+def _merge_filters(parsed: CandidateFilters, explicit: CandidateFilters) -> CandidateFilters:
+    """Explicit form filters win over natural-language conditions; otherwise fall back."""
+    return CandidateFilters(
+        min_years=explicit.min_years if explicit.min_years is not None else parsed.min_years,
+        highest_degree=explicit.highest_degree or parsed.highest_degree,
+        location=explicit.location or parsed.location,
+        candidate_status=explicit.candidate_status or parsed.candidate_status,
+        max_qs_rank=explicit.max_qs_rank if explicit.max_qs_rank is not None else parsed.max_qs_rank,
     )
