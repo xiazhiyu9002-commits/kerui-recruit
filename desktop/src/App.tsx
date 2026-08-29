@@ -165,6 +165,7 @@ export interface MigrationReport {
 
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
+  importFolder(directory: string): Promise<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>;
   getTask(taskId: string): Promise<TaskStatus>;
   searchCandidates(query: string): Promise<CandidateSearchResult>;
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
@@ -227,6 +228,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [results, setResults] = useState<CandidateSearchItem[]>([]);
   const [selected, setSelected] = useState<CandidateSearchItem | null>(null);
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
+  const [folderPath, setFolderPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
 
@@ -314,6 +316,25 @@ export function App({ api }: { api: RecruitmentApi }) {
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "导入失败，请检查文件");
       }
+    }
+  }
+
+  async function importFolderPath(event: FormEvent) {
+    event.preventDefault();
+    if (!folderPath.trim()) return;
+    setError(null);
+    try {
+      const result = await api.importFolder(folderPath.trim());
+      for (const imported of result.imported) {
+        const task = await api.getTask(imported.task_id);
+        setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+      }
+      if (result.skipped.length > 0 || result.errors.length > 0) {
+        setError(`已导入 ${result.imported.length} 个，跳过 ${result.skipped.length} 个，失败 ${result.errors.length} 个`);
+      }
+      setFolderPath("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "文件夹导入失败");
     }
   }
 
@@ -716,6 +737,10 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="quick-filters">
                 <button>工作年限</button><button>学历</button><button>地点</button><button>学校等级</button>
               </div>
+              <form className="folder-import" onSubmit={(event) => void importFolderPath(event)}>
+                <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="导入文件夹路径，如 D:\简历库" aria-label="文件夹路径" />
+                <button type="submit">导入文件夹</button>
+              </form>
             </section>
 
             <section className="content-grid">

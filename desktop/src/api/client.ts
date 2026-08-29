@@ -52,6 +52,17 @@ export class ApiClient implements RecruitmentApi {
     });
   }
 
+  importFolder(directory: string) {
+    return this.request<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>(
+      "/api/resumes/import-folder",
+      {
+        body: JSON.stringify({ directory }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
   getTask(taskId: string): Promise<TaskStatus> {
     return this.request<TaskStatus>(`/api/tasks/${encodeURIComponent(taskId)}`);
   }

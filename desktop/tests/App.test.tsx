@@ -14,6 +14,7 @@ function fakeApi(): RecruitmentApi {
       blob_id: "blob-1",
       task_id: "task-1"
     }),
+    importFolder: async () => ({ imported: [], skipped: [], errors: [] }),
     getTask: async () => ({
       id: "task-1",
       task_type: "PARSE_RESUME",
