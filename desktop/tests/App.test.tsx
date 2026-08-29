@@ -84,6 +84,8 @@ function fakeApi(): RecruitmentApi {
     }),
     dashboardByJd: async () => [],
     reverseMatch: async () => [],
+    getCandidateContact: async () => ({ email: "zhang@example.com", phone: "13800138000", email_confidence: 0.9, phone_confidence: 0.9 }),
+    updateCandidateContact: async (_candidateId, input) => ({ email: input.email, phone: input.phone, email_confidence: 1.0, phone_confidence: 1.0 }),
     listDeleted: async () => [],
     restoreDeleted: async () => ({ entity_type: "candidate", entity_id: "candidate-1", deleted: false }),
     exportMappingTree: async () => undefined,
@@ -194,5 +196,25 @@ describe("desktop recruitment workflow", () => {
 
     expect(await screen.findByText("招聘流程")).toBeVisible();
     expect(screen.getByText("暂无进行中的流程")).toBeVisible();
+  });
+
+  test("shows and edits candidate contact details in the drawer", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.type(screen.getByPlaceholderText("搜索人才、技能、公司或自然语言"), "Python");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+
+    const email = await screen.findByLabelText("候选人邮箱");
+    const phone = screen.getByLabelText("候选人手机");
+    expect(email).toHaveValue("zhang@example.com");
+    expect(phone).toHaveValue("13800138000");
+
+    await user.clear(email);
+    await user.type(email, "new@example.com");
+    await user.click(screen.getByRole("button", { name: "保存联系方式" }));
+
+    expect(email).toHaveValue("new@example.com");
   });
 });

@@ -14,7 +14,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 - **BD 助手**：以岗找公司、来源留痕、线索状态更新。
 - **任务中心**：持久化任务租约、失败重试、取消、崩溃恢复。
 - **运维**：备份/恢复、数据目录迁移（复制+哈希校验）、诊断包、健康检测（含磁盘与检索预热）、首次启动检查（数据目录/Provider 配置/健康汇总）。
-- **数据安全**：字段级 AES-256-GCM 加密、软删除/回收站/恢复/30 天到期清理/撤销。
+- **数据安全**：字段级 AES-256-GCM 加密、候选人联系方式加密持久化（`candidate_contact`，从简历提取邮箱/手机号并加密入库）、软删除/回收站/恢复/30 天到期清理/撤销。
 - **被动入库**：IMAP 邮箱附件过滤/游标/幂等、提醒与 SMTP 发送、调度器。
 - **设置**：可配置 API 密钥（DeepSeek / 硅基流动 / Tavily / IMAP / SMTP），密钥脱敏存储。
 - **OCR**：扫描件走 OpenAI-compatible 视觉模型 OCR Provider（未配置密钥时扫描件解析报 `E_OCR_REQUIRED`）。
@@ -23,7 +23,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 
 | 层 | 命令 | 结果 |
 | --- | --- | --- |
-| 后端单元/集成 | `pytest -q`（`backend`，非 performance） | **137 passed** |
+| 后端单元/集成 | `pytest -q`（`backend`，非 performance） | **151 passed** |
 | 后端性能门槛 | `pytest tests/performance -m performance` | **1 passed**（12,000 候选、200 查询，p95 ≤ 1.5s、p99 ≤ 2.5s、Recall@300 ≥ 98%） |
 | 桌面 React 单元 | `npm test`（`desktop`） | **14 passed** |
 | 桌面类型检查 | `npx tsc -b`（`desktop`） | 通过 |

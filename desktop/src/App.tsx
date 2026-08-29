@@ -35,6 +35,13 @@ export interface CandidateSearchResult {
   degraded_reasons: string[];
 }
 
+export interface CandidateContact {
+  email: string | null;
+  phone: string | null;
+  email_confidence: number | null;
+  phone_confidence: number | null;
+}
+
 export interface ImportedJd {
   jd_id: string;
   revision_id: string;
@@ -198,6 +205,8 @@ export interface RecruitmentApi {
   dashboardOverview(): Promise<DashboardOverview>;
   dashboardByJd(): Promise<{ jd_id: string; company: string; title: string; stage_counts: Record<string, number> }[]>;
   reverseMatch(candidateId: string): Promise<ReverseMatchItem[]>;
+  getCandidateContact(candidateId: string): Promise<CandidateContact>;
+  updateCandidateContact(candidateId: string, input: { email: string | null; phone: string | null }): Promise<CandidateContact>;
   listDeleted(): Promise<DeletedItem[]>;
   restoreDeleted(entityType: string, entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
   exportMappingTree(snapshotId: string): Promise<void>;
@@ -288,6 +297,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [caseEvents, setCaseEvents] = useState<StageEventItem[]>([]);
   const [reverseMatches, setReverseMatches] = useState<ReverseMatchItem[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [selectedContact, setSelectedContact] = useState<CandidateContact | null>(null);
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPhone, setContactPhone] = useState("");
 
   // 回收站
   const [deletedItems, setDeletedItems] = useState<DeletedItem[]>([]);
@@ -511,12 +523,31 @@ export function App({ api }: { api: RecruitmentApi }) {
     setSelected(item);
     setActiveCaseId(null);
     setCaseEvents([]);
+    setSelectedContact(null);
     setError(null);
     try {
       setSelectedCases(await api.listCases(item.candidate_id));
       setReverseMatches(await api.reverseMatch(item.candidate_id));
+      const contact = await api.getCandidateContact(item.candidate_id);
+      setSelectedContact(contact);
+      setContactEmail(contact.email ?? "");
+      setContactPhone(contact.phone ?? "");
     } catch {
       // 详情抽屉仍可打开，即使流程数据加载失败。
+    }
+  }
+
+  async function saveContact() {
+    if (!selected) return;
+    setError(null);
+    try {
+      const updated = await api.updateCandidateContact(selected.candidate_id, {
+        email: contactEmail.trim() || null,
+        phone: contactPhone.trim() || null
+      });
+      setSelectedContact(updated);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "联系方式保存失败");
     }
   }
 
@@ -1179,6 +1210,31 @@ export function App({ api }: { api: RecruitmentApi }) {
             <div><small>当前地点</small><strong>{selected.location ?? "待核验"}</strong></div>
             <div><small>融合得分</small><strong>{selected.score.toFixed(3)}</strong></div>
           </div>
+
+          <section className="case-section" aria-label="联系方式">
+            <h3>联系方式</h3>
+            <div className="contact-form">
+              <label>
+                邮箱
+                <input
+                  value={contactEmail}
+                  onChange={(event) => setContactEmail(event.target.value)}
+                  placeholder="candidate@example.com"
+                  aria-label="候选人邮箱"
+                />
+              </label>
+              <label>
+                手机
+                <input
+                  value={contactPhone}
+                  onChange={(event) => setContactPhone(event.target.value)}
+                  placeholder="13800138000"
+                  aria-label="候选人手机"
+                />
+              </label>
+              <button className="detail-button" onClick={() => void saveContact()}>保存联系方式</button>
+            </div>
+          </section>
 
           {reverseMatches.length > 0 && (
             <section className="case-section" aria-label="潜在匹配岗位">

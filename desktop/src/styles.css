@@ -108,6 +108,10 @@ td small { color: #8b978f; margin-top: 5px; }
 .case-events { margin-top: 12px; padding: 12px; background: #f7faf7; border-radius: 10px; }
 .case-events div { padding: 4px 0; font-size: 13px; }
 .case-events strong { color: #2a7656; }
+.contact-form { display: grid; gap: 10px; }
+.contact-form label { display: grid; gap: 6px; font-size: 12px; color: #6e7a72; }
+.contact-form input { width: 100%; border: 1px solid #dfe7e1; border-radius: 10px; padding: 10px 12px; background: #fbfcfb; font: inherit; outline: none; }
+.contact-form .detail-button { justify-self: start; border-radius: 10px; background: #1e5b43; color: white; padding: 10px 16px; }
 
 .funnel-bars { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .funnel-bar { display: grid; grid-template-columns: 80px 1fr 40px; align-items: center; gap: 10px; }

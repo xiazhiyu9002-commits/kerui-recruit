@@ -4,6 +4,7 @@ import type {
   AppSettings,
   BackupSnapshot,
   BdLead,
+  CandidateContact,
   CandidateSearchResult,
   CaseItem,
   DashboardOverview,
@@ -218,6 +219,23 @@ export class ApiClient implements RecruitmentApi {
   reverseMatch(candidateId: string) {
     return this.request<ReverseMatchItem[]>(
       `/api/match/reverse/${encodeURIComponent(candidateId)}`
+    );
+  }
+
+  getCandidateContact(candidateId: string) {
+    return this.request<CandidateContact>(
+      `/api/resumes/candidate/${encodeURIComponent(candidateId)}/contact`
+    );
+  }
+
+  updateCandidateContact(candidateId: string, input: { email: string | null; phone: string | null }) {
+    return this.request<CandidateContact>(
+      `/api/resumes/candidate/${encodeURIComponent(candidateId)}/contact`,
+      {
+        body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
     );
   }
 

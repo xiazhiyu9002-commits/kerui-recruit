@@ -8,7 +8,8 @@ from sqlalchemy import select, update
 
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
-from kerui_recruit.db.models import ResumeDocument, ResumeRevision
+from kerui_recruit.db.models import Candidate, CandidateContact, ResumeDocument, ResumeRevision
+from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 
 
@@ -131,4 +132,81 @@ def switch_revision(revision_id: str, request: Request) -> ResumeRevisionItem:
             status=revision.status,
             is_current=revision.is_current,
             created_at=revision.created_at,
+        )
+
+
+class CandidateContactResponse(BaseModel):
+    email: str | None
+    phone: str | None
+    email_confidence: float | None
+    phone_confidence: float | None
+
+
+class CandidateContactUpdate(BaseModel):
+    email: str | None = None
+    phone: str | None = None
+
+
+def _decrypt_contact(
+    contact: CandidateContact | None,
+    encryption: EncryptionService | None,
+) -> CandidateContactResponse:
+    email = (
+        encryption.decrypt(contact.email_encrypted)
+        if contact is not None and contact.email_encrypted and encryption is not None
+        else None
+    )
+    phone = (
+        encryption.decrypt(contact.phone_encrypted)
+        if contact is not None and contact.phone_encrypted and encryption is not None
+        else None
+    )
+    return CandidateContactResponse(
+        email=email,
+        phone=phone,
+        email_confidence=contact.email_confidence if contact is not None else None,
+        phone_confidence=contact.phone_confidence if contact is not None else None,
+    )
+
+
+@router.get("/candidate/{candidate_id}/contact", response_model=CandidateContactResponse)
+def get_candidate_contact(candidate_id: str, request: Request) -> CandidateContactResponse:
+    services: AppServices = request.app.state.services
+    with services.session_factory() as session:
+        contact = session.scalar(
+            select(CandidateContact).where(CandidateContact.candidate_id == candidate_id)
+        )
+    return _decrypt_contact(contact, services.encryption_service)
+
+
+@router.put("/candidate/{candidate_id}/contact", response_model=CandidateContactResponse)
+def update_candidate_contact(
+    candidate_id: str,
+    command: CandidateContactUpdate,
+    request: Request,
+) -> CandidateContactResponse:
+    services: AppServices = request.app.state.services
+    encryption = services.encryption_service
+    if encryption is None:
+        raise ApiError(500, "E_ENCRYPTION_UNAVAILABLE", "加密服务不可用")
+    with services.session_factory() as session, session.begin():
+        candidate = session.get(Candidate, candidate_id)
+        if candidate is None:
+            raise ApiError(404, "E_CANDIDATE_NOT_FOUND", "候选人不存在")
+        contact = session.scalar(
+            select(CandidateContact).where(CandidateContact.candidate_id == candidate_id)
+        )
+        if contact is None:
+            contact = CandidateContact(candidate=candidate)
+            session.add(contact)
+        contact.email_encrypted = encryption.encrypt(command.email) if command.email else None
+        contact.phone_encrypted = encryption.encrypt(command.phone) if command.phone else None
+        contact.email_confidence = 1.0 if command.email else None
+        contact.phone_confidence = 1.0 if command.phone else None
+        session.flush()
+        return CandidateContactResponse(
+            email=command.email,
+            phone=command.phone,
+            email_confidence=contact.email_confidence,
+            phone_confidence=contact.phone_confidence,
         )
