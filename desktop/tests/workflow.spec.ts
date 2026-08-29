@@ -8,6 +8,7 @@ test("imports a JD and runs a match", async ({ page }) => {
   await page.goto("/");
 
   await page.getByText("JD 管理").click();
+  await page.getByLabel("JD 公司").fill("某金融");
   await page.getByLabel("JD 岗位").fill("Java 后端工程师");
   await page.getByLabel("JD 原文").fill("负责支付系统，3 年 Java，本科，金融");
   await page.getByRole("button", { name: "导入并解析" }).click();

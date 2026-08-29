@@ -10,6 +10,6 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./tests/setup.ts",
     css: true,
-    exclude: ["**/node_modules/**", "**/search.spec.ts"]
+    exclude: ["**/node_modules/**", "**/*.spec.ts"]
   }
 });
