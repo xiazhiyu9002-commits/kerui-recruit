@@ -13,7 +13,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 - **Mapping**：项目、缩进文本建树、快照、树 Excel/PDF 导出。
 - **BD 助手**：以岗找公司、来源留痕、线索状态更新；供应商适配层支持 Tavily 首选、SerpApi 备选。
 - **任务中心**：持久化任务租约、失败重试、暂停/继续、取消、崩溃恢复、任务列表查询、四类队列（交互/普通/批量/导出）路由；桌面端关闭窗口最小化到系统托盘（托盘菜单提供显示/退出）。
-- **运维**：备份/恢复（含便携备份同盘风险提示）、数据目录迁移（复制+哈希校验）、诊断包、健康检测（含磁盘与检索预热）、首次启动检查（数据目录/Provider 配置/健康汇总）、Provider 连通性「API 测试」、schema 版本追踪与校验（`schema_version`）。
+- **运维**：备份/恢复（含便携备份同盘风险提示）、数据目录迁移（复制+哈希校验）、诊断包、健康检测（含磁盘与检索预热）、首次启动检查（数据目录/Provider 配置/健康汇总）、Provider 连通性「API 测试」、schema 版本追踪与校验（`schema_version`）、首启数据目录选择（含云同步/网络盘/系统目录校验）。
 - **数据安全**：字段级 AES-256-GCM 加密、候选人联系方式加密持久化（`candidate_contact`，从简历提取邮箱/手机号并加密入库，提供解密读取/加密更新 API 与详情页维护）、软删除/回收站/恢复/30 天到期清理/撤销。
 - **被动入库**：IMAP 邮箱附件过滤/游标/幂等、提醒与 SMTP 发送、调度器。
 - **设置**：可配置 API 密钥（DeepSeek / 硅基流动 / Tavily / IMAP / SMTP），密钥脱敏存储。
@@ -27,7 +27,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 | 后端性能门槛 | `pytest tests/performance -m performance` | **1 passed**（12,000 候选、200 查询，p95 ≤ 1.5s、p99 ≤ 2.5s、Recall@300 ≥ 98%） |
 | 桌面 React 单元 | `npm test`（`desktop`） | **15 passed** |
 | 桌面类型检查 | `npx tsc -b`（`desktop`） | 通过 |
-| 桌面 Rust 单元 | `cargo test`（`desktop/src-tauri`） | **2 passed** |
+| 桌面 Rust 单元 | `cargo test`（`desktop/src-tauri`） | **5 passed** |
 | 桌面 E2E | `npm run test:e2e`（需打包后的 Tauri 壳 + sidecar） | 见下方说明 |
 
 后端覆盖 Provider 契约、SQLite schema、简历/JD/匹配/流程/Mapping/BD/备份/诊断/加密/提醒/调度/软删除/迁移等模块。
