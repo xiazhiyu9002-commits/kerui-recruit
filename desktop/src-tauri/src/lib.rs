@@ -6,7 +6,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{Manager, RunEvent, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    Manager, RunEvent, State, WindowEvent,
+};
 
 /// Per-launch runtime values handed to the React frontend so it can reach the
 /// Python sidecar on loopback with a short-lived session token.
@@ -159,6 +163,33 @@ fn runtime_config(state: State<'_, RuntimeConfig>) -> RuntimeConfig {
     state.inner().clone()
 }
 
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    let Some(icon) = app.default_window_icon() else {
+        return Ok(());
+    };
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon.clone())
+        .tooltip("科锐人才库")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -183,9 +214,18 @@ pub fn run() {
 
             app.manage(SidecarProcess(Mutex::new(Some(child))));
             app.manage(config);
+            create_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![runtime_config])
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the window minimizes to the system tray instead of
+                // exiting; the tray "退出" menu item performs the real exit.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
