@@ -14,6 +14,7 @@ import type {
   MappingSnapshot,
   MappingTreeNode,
   MigrationReport,
+  OnboardingStatus,
   RecruitmentApi,
   ReminderItem,
   ReverseMatchItem,
@@ -61,6 +62,10 @@ export class ApiClient implements RecruitmentApi {
         method: "POST"
       }
     );
+  }
+
+  onboardingStatus() {
+    return this.request<OnboardingStatus>("/api/onboarding/status");
   }
 
   getTask(taskId: string): Promise<TaskStatus> {

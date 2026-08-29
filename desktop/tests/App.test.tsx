@@ -96,7 +96,8 @@ function fakeApi(): RecruitmentApi {
     listReminders: async () => [],
     createReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: false, dismissed_at: null }),
     dismissReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: true, dismissed_at: "2026-08-29T10:00:00" }),
-    migrateData: async () => ({ target_root: "/tmp/new", files_copied: 3, files_verified: 3, candidate_count: 1, ok: true })
+    migrateData: async () => ({ target_root: "/tmp/new", files_copied: 3, files_verified: 3, candidate_count: 1, ok: true }),
+    onboardingStatus: async () => ({ data_root: "/tmp/data", llm_enabled: false, search_enabled: false, bd_search_enabled: false, mail_enabled: false, smtp_enabled: false, health: { database: { status: "healthy" } } })
   };
 }
 

@@ -163,6 +163,16 @@ export interface MigrationReport {
   ok: boolean;
 }
 
+export interface OnboardingStatus {
+  data_root: string;
+  llm_enabled: boolean;
+  search_enabled: boolean;
+  bd_search_enabled: boolean;
+  mail_enabled: boolean;
+  smtp_enabled: boolean;
+  health: Record<string, { status: string; message?: string }>;
+}
+
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   importFolder(directory: string): Promise<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>;
@@ -201,6 +211,7 @@ export interface RecruitmentApi {
   createReminder(input: { title: string; remind_at: string; note?: string }): Promise<ReminderItem>;
   dismissReminder(id: string): Promise<ReminderItem>;
   migrateData(targetRoot: string): Promise<MigrationReport>;
+  onboardingStatus(): Promise<OnboardingStatus>;
 }
 
 
@@ -294,6 +305,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 数据迁移
   const [migrationTarget, setMigrationTarget] = useState("");
   const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
+
+  // 启动检查
+  const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
@@ -678,6 +692,15 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function loadOnboarding() {
+    setError(null);
+    try {
+      setOnboarding(await api.onboardingStatus());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "启动检查失败");
+    }
+  }
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const meta = event.metaKey || event.ctrlKey;
@@ -985,6 +1008,27 @@ export function App({ api }: { api: RecruitmentApi }) {
 
         {activeNav === 6 && (
           <section className="jd-panel">
+            <div className="case-section">
+              <div className="section-heading">
+                <h2>启动检查</h2>
+                <button className="import-button" onClick={() => void loadOnboarding()}>运行检查</button>
+              </div>
+              {onboarding && (
+                <div className="health-grid">
+                  <div className="health-card"><small>数据目录</small><strong>{onboarding.data_root}</strong></div>
+                  <div className="health-card"><small>LLM</small><strong>{onboarding.llm_enabled ? "已配置" : "未配置"}</strong></div>
+                  <div className="health-card"><small>向量/重排</small><strong>{onboarding.search_enabled ? "已配置" : "本地"}</strong></div>
+                  <div className="health-card"><small>BD 搜索</small><strong>{onboarding.bd_search_enabled ? "已配置" : "未配置"}</strong></div>
+                  {Object.entries(onboarding.health).map(([name, component]) => (
+                    <div key={name} className="health-card">
+                      <small>{HEALTH_LABELS[name] ?? name}</small>
+                      <strong className={component.status === "healthy" ? "ok" : "bad"}>{component.status === "healthy" ? "正常" : "异常"}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <form className="jd-form" onSubmit={(event) => void saveSettings(event)}>
               <div className="section-heading">
                 <h2>模型 API 配置</h2>
