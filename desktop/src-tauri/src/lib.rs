@@ -121,6 +121,23 @@ fn wait_until_ready(config: &RuntimeConfig, timeout: Duration) -> io::Result<()>
     ))
 }
 
+/// Terminate the sidecar and, on Windows, its whole process tree.
+///
+/// PyInstaller one-file executables fork a child interpreter, so killing only
+/// the bootloader leaves the real server process orphaned. Use `taskkill /T`
+/// on Windows; on other platforms the bootloader forwards shutdown itself.
+fn terminate_sidecar(child: &mut Child) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[tauri::command]
 fn runtime_config(state: State<'_, RuntimeConfig>) -> RuntimeConfig {
     state.inner().clone()
@@ -159,8 +176,7 @@ pub fn run() {
             if let RunEvent::Exit = event {
                 if let Some(process) = app_handle.try_state::<SidecarProcess>() {
                     if let Some(mut child) = process.0.lock().unwrap().take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        terminate_sidecar(&mut child);
                     }
                 }
             }

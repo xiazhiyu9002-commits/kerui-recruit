@@ -39,4 +39,12 @@ sidecar 打包通过 PyInstaller spec（`backend/packaging/kerui_recruit.spec`�
 
 Rust 壳层通过优先级 `KERUI_SIDECAR_BIN` 环境变量 → 与桌面可执行文件同目录的 `kerui-recruit-sidecar[.exe]` 定位打包产物。macOS arm64 构建需在对应平台执行同一 spec，不在 Windows 交叉打包。
 
-Playwright E2E（`npm run test:e2e`）需打包后的 Tauri 壳层与 sidecar 同机运行，本机仅完成 sidecar 层闭环验证，未启动完整 GUI。
+桌面壳层已在本机（Windows 11 x64）完成完整冒烟：
+
+- `cargo build` 产出 `kerui-recruit-desktop.exe`；
+- 启动后壳层通过 `RuntimeConfig::allocate` 随机回环端口 + 256 位令牌自动拉起 sidecar，`wait_until_ready` 确认 `/health/ready` 后进入运行态（壳层存活 8s+）；
+- 优雅关闭（`CloseMainWindow`）触发 `RunEvent::Exit`，经 `taskkill /T /F` 完整终止 sidecar 进程树，验证无孤儿进程。
+
+> 注：PyInstaller one-file 会 fork 出 bootloader + 真实解释器两个进程，直接 `child.kill()` 只终止 bootloader、留下孤儿服务进程。已在 `terminate_sidecar` 中通过 Windows `taskkill /T` 终止整棵进程树修复。
+
+Playwright E2E（`npm run test:e2e`）需打包后的 Tauri 壳层与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环与壳层启动/退出冒烟，未在无头环境跑浏览器端 E2E。
