@@ -6,7 +6,7 @@ import pytest
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import sessionmaker
 
-from kerui_recruit.backup.portable import PortableBackupService
+from kerui_recruit.backup.portable import PortableBackupService, is_same_volume
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Candidate
 from kerui_recruit.db.session import create_engine_for
@@ -68,3 +68,11 @@ def test_portable_backup_rejects_wrong_passphrase(
 
     with pytest.raises(InvalidToken):
         service.restore(backup, tmp_path / "target", "wrong passphrase")
+
+
+def test_is_same_volume_detects_same_directory(tmp_path: Path) -> None:
+    assert is_same_volume(tmp_path / "current", tmp_path / "target") is True
+
+
+def test_is_same_volume_handles_non_existent_target(tmp_path: Path) -> None:
+    assert is_same_volume(tmp_path / "current", tmp_path / "does" / "not" / "exist") is True

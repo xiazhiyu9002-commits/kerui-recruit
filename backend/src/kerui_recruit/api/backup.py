@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from kerui_recruit.api.services import AppServices
-from kerui_recruit.backup.portable import PortableRestoreReport
+from kerui_recruit.backup.portable import PortableRestoreReport, is_same_volume
 
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
@@ -58,6 +58,7 @@ class CreatePortableRequest(BaseModel):
 
 class CreatePortableResponse(BaseModel):
     path: str
+    same_volume: bool
 
 
 class RestorePortableRequest(BaseModel):
@@ -76,11 +77,10 @@ class RestorePortableResponse(BaseModel):
 @router.post("/portable", response_model=CreatePortableResponse)
 def create_portable(command: CreatePortableRequest, request: Request) -> CreatePortableResponse:
     services: AppServices = request.app.state.services
-    path = services.portable_backup_service.create(
-        Path(command.target_path),
-        command.passphrase,
-    )
-    return CreatePortableResponse(path=str(path))
+    target = Path(command.target_path)
+    path = services.portable_backup_service.create(target, command.passphrase)
+    same_volume = is_same_volume(services.portable_backup_service.current_root, target)
+    return CreatePortableResponse(path=str(path), same_volume=same_volume)
 
 
 @router.post("/portable/restore", response_model=RestorePortableResponse)

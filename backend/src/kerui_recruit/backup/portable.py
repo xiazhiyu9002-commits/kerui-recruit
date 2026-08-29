@@ -39,6 +39,29 @@ def _derive_key(passphrase: str, salt: bytes) -> bytes:
     return base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
 
 
+def is_same_volume(left: Path, right: Path) -> bool:
+    """Return True when two paths live on the same storage volume.
+
+    On Windows the drive letter decides; elsewhere the device number of the
+    deepest existing ancestor decides (so a not-yet-created target still works).
+    """
+    left = left.absolute()
+    right = right.absolute()
+    if os.name == "nt":
+        return left.drive.casefold() == right.drive.casefold()
+    try:
+        return _device(left) == _device(right)
+    except OSError:
+        return True
+
+
+def _device(path: Path) -> int:
+    candidate = path
+    while not candidate.exists() and candidate.parent != candidate:
+        candidate = candidate.parent
+    return candidate.stat().st_dev
+
+
 class PortableBackupService:
     """Create an encrypted portable backup and restore it to a new directory.
 
