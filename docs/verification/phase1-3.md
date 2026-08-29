@@ -47,6 +47,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 - **便携备份**：`PortableBackupService` 将 db / search / blobs / config 打包为单一 `.krbackup`（含 SHA-256 清单），用口令派生密钥（PBKDF2-SHA256 + Fernet）加密，恢复到新目录并逐文件校验哈希（`tests/backup/test_portable_backup.py`，含错误口令拒绝测试）。
 - **自动增量备份**：后台调度器每日生成 SQLite 快照并按「7 每日 + 4 每周」轮换清理（`BackupService.prune` + `SchedulerService.backup_tick`）。
 - **脱敏样本端到端验收**（spec 12.2.4）：`tests/api/test_full_acceptance.py` 用脱敏简历样本走通 解析 → 去重（Blob 复用）→ 搜索 → JD 匹配 → Excel 导出 全链路。
+- **浏览器端 E2E**（spec 12.1）：`npm run test:e2e`（Playwright + 本地 sidecar + vite）**6 全部通过**，覆盖简历导入/检索、JD 导入/匹配、看板、Mapping、BD、健康检测与备份。为此修复了 sidecar CORS、`fetch` 绑定、后台任务轮询与健康标签本地化。
 
 ## 尚未在本机闭环的验收项
 
@@ -54,9 +55,7 @@ Phase 1–3 的后端业务能力与前端主界面已实现并固化落库，�
 
 1. **代码签名与 macOS 安装包**（spec 11）：Windows NSIS 安装包已构建（未签名）；代码签名需证书。macOS arm64 需在 Apple Silicon 构建机执行 `npm run tauri build`，不可交叉打包。
 
-2. **浏览器端 E2E**（spec 12.1）：`search.spec.ts` 与 `workflow.spec.ts` 需打包后的 Tauri 壳与 sidecar 同机运行；本机已完成 sidecar HTTP 闭环、壳层启动/退出冒烟与安装包构建。
-
-3. **真实样本验收**（spec 12.2.4）：脱敏样本全链路已通过；真实招聘简历样本（含真实姓名/联系方式）需在用户侧跑通，覆盖扫描件 OCR 与字段校验。
+2. **真实样本验收**（spec 12.2.4）：脱敏样本全链路已通过；真实招聘简历样本（含真实姓名/联系方式）需在用户侧跑通，覆盖扫描件 OCR 与字段校验。
 
 ## CI
 
