@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from pathlib import Path
 
 import pymupdf
@@ -11,6 +13,7 @@ from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers.fakes import FakeEmbeddingProvider
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
+from kerui_recruit.resumes.extract import ExtractedText
 from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.resumes.structured import ParsedExperience, ParsedResume
 from kerui_recruit.search.contracts import CandidateFilters, SearchRequest
@@ -207,3 +210,47 @@ async def test_pipeline_encrypts_contact_details(tmp_path: Path) -> None:
         assert encryption.decrypt(contact.phone_encrypted) == "13800138000"
         assert contact.email_confidence == pytest.approx(0.9)
         assert contact.phone_confidence == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_extraction_does_not_block_desktop_api_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine_for(tmp_path / "db" / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    store = BlobStore(tmp_path / "blobs", tmp_path / "temp")
+    with factory() as session:
+        ingested = ResumeIngestService(session, store).ingest(
+            IngestResume(filename="candidate.pdf", content=make_pdf_bytes())
+        )
+
+    release = threading.Event()
+
+    def blocking_extract(_path: Path) -> ExtractedText:
+        release.wait(timeout=2)
+        return ExtractedText(
+            text="Python Finance Resume with five years",
+            page_count=1,
+            requires_ocr=False,
+        )
+
+    monkeypatch.setattr("kerui_recruit.resumes.pipeline.extract_text", blocking_extract)
+    timer = threading.Timer(0.75, release.set)
+    timer.daemon = True
+    timer.start()
+    pipeline = ResumePipeline(
+        session_factory=factory,
+        blob_store=store,
+        parser=FixedResumeParser(),
+        embedding_provider=FakeEmbeddingProvider(dimension=16),
+    )
+
+    started = asyncio.get_running_loop().time()
+    task = asyncio.create_task(pipeline.run(ingested.revision_id))
+    await asyncio.sleep(0.05)
+    elapsed = asyncio.get_running_loop().time() - started
+    await task
+
+    assert elapsed < 0.5

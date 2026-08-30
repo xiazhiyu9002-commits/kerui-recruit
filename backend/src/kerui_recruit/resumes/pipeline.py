@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,12 +82,12 @@ class ResumePipeline:
             original_filename = revision.original_filename
             session.commit()
 
-        extracted = extract_text(source_path)
+        extracted = await asyncio.to_thread(extract_text, source_path)
         if extracted.requires_ocr:
             if self.ocr_provider is None:
                 raise RuntimeError("E_OCR_REQUIRED")
             source_text = await self.ocr_provider.extract(
-                source_path.read_bytes(),
+                await asyncio.to_thread(source_path.read_bytes),
                 original_filename,
             )
         else:
@@ -114,8 +115,11 @@ class ResumePipeline:
             for content, vector in zip(contents, vectors, strict=True)
         )
         if self.search_index is not None:
-            self.search_index.delete_revision(revision_id)
-            self.search_index.upsert(list(chunks))
+            def update_search_projection() -> None:
+                self.search_index.delete_revision(revision_id)
+                self.search_index.upsert(list(chunks))
+
+            await asyncio.to_thread(update_search_projection)
 
         with self.session_factory() as session, session.begin():
             revision = session.get(ResumeRevision, revision_id)

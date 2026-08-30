@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -7,7 +8,7 @@ import pytest
 from kerui_recruit.core.settings import Settings
 from kerui_recruit.db.models import ResumeRevision, TaskRecord
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
-from kerui_recruit.runtime import build_runtime, create_runtime_app
+from kerui_recruit.runtime import _worker_loop, build_runtime, create_runtime_app
 from kerui_recruit.search.contracts import CandidateFilters
 
 
@@ -51,3 +52,27 @@ async def test_runtime_app_reports_readiness_after_local_stores_open(tmp_path: P
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+@pytest.mark.asyncio
+async def test_busy_local_worker_yields_to_api_requests() -> None:
+    class BusyWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.block = asyncio.Event()
+
+        async def run_once(self) -> bool:
+            self.calls += 1
+            if self.calls > 10:
+                await self.block.wait()
+            return True
+
+    worker = BusyWorker()
+    task = asyncio.create_task(_worker_loop(worker))  # type: ignore[arg-type]
+    await asyncio.sleep(0)
+    observed_calls = worker.calls
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert observed_calls == 1

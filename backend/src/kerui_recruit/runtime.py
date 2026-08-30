@@ -267,5 +267,7 @@ def create_runtime_app(settings: Settings) -> FastAPI:
 async def _worker_loop(worker: TaskWorker) -> None:
     while True:
         worked = await worker.run_once()
-        if not worked:
-            await asyncio.sleep(0.25)
+        # Local parsers and embeddings may complete without a network await.
+        # Always yield after a claimed task so a large batch cannot starve API
+        # responses and desktop health checks on the same event loop.
+        await asyncio.sleep(0 if worked else 0.25)
