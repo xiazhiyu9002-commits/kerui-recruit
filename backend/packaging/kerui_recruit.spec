@@ -13,6 +13,9 @@ import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 hiddenimports = collect_submodules("uvicorn")
+if os.name == "nt":
+    hiddenimports += collect_submodules("win32com")
+    hiddenimports += ["pythoncom", "pywintypes"]
 
 datas = []
 datas += collect_data_files("uvicorn")

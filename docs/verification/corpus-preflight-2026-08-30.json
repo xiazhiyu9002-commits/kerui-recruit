@@ -4,17 +4,17 @@
   "supported_files": 2056,
   "unsupported_files": 12,
   "duplicate_files": 90,
-  "extractable_files": 2047,
+  "extractable_files": 2052,
   "ocr_required_files": 4,
-  "extraction_failed_files": 5,
+  "extraction_failed_files": 0,
   "aggregate_sha256": "759157fe43c2c00607816b7381cb131a42dbe2afd6690e936891cd1e658afae9",
   "formats": {
     "doc": {
       "files": 5,
       "bytes": 914182,
-      "extractable": 0,
+      "extractable": 5,
       "ocr_required": 0,
-      "extraction_failed": 5
+      "extraction_failed": 0
     },
     "docx": {
       "files": 106,
