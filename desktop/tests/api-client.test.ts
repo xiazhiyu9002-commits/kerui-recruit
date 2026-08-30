@@ -215,4 +215,32 @@ describe("ApiClient", () => {
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/backup/portable/restore");
     expect(await received[1].json()).toEqual({ backup_path: "D:/backup.krbackup", target_root: "D:/restored", passphrase: "passphrase" });
   });
+
+  test("posts soft delete and auditable corrections", async () => {
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify(received.length === 1
+        ? { entity_type: "candidate", entity_id: "candidate-1", deleted: true }
+        : { correction_id: "correction-1", entity_type: "candidate", field_name: "display_name", old_value: "张三", new_value: "张四", reverted: false }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.softDelete("candidate", "candidate-1");
+    await client.applyCorrection({
+      entityType: "candidate",
+      entityId: "candidate-1",
+      fieldName: "display_name",
+      newValue: "张四",
+      reason: "姓名纠正"
+    });
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/soft-delete");
+    expect(await received[0].json()).toEqual({ entity_type: "candidate", entity_id: "candidate-1" });
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/correction/apply");
+    expect(await received[1].json()).toEqual({ entity_type: "candidate", entity_id: "candidate-1", field_name: "display_name", new_value: "张四", reason: "姓名纠正" });
+  });
 });

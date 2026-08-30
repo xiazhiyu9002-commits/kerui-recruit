@@ -87,3 +87,21 @@ def test_undo_already_reverted_raises(session_factory: sessionmaker[Session]) ->
 
     with pytest.raises(ValueError, match="already reverted"):
         service.undo_correction(log.id)
+
+
+def test_rejects_correction_of_internal_fields(session_factory: sessionmaker[Session]) -> None:
+    with session_factory() as session:
+        candidate = Candidate(display_name="张三")
+        session.add(candidate)
+        session.commit()
+        cid = candidate.id
+
+    service = CorrectionService(session_factory=session_factory)
+
+    with pytest.raises(ValueError, match="cannot be corrected"):
+        service.apply_correction(
+            entity_type="candidate",
+            entity_id=cid,
+            field_name="id",
+            new_value="replaced-id",
+        )

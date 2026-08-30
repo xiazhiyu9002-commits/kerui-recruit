@@ -7,6 +7,7 @@ import type {
   CandidateContact,
   CandidateSearchResult,
   CaseItem,
+  CorrectionRecord,
   DashboardOverview,
   DeletedItem,
   DiagnosticsData,
@@ -314,6 +315,17 @@ export class ApiClient implements RecruitmentApi {
     return this.request<DeletedItem[]>("/api/soft-delete/list");
   }
 
+  softDelete(entityType: "candidate" | "jd", entityId: string) {
+    return this.request<{ entity_type: string; entity_id: string; deleted: boolean }>(
+      "/api/soft-delete",
+      {
+        body: JSON.stringify({ entity_type: entityType, entity_id: entityId }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
   restoreDeleted(entityType: string, entityId: string) {
     return this.request<{ entity_type: string; entity_id: string; deleted: boolean }>(
       "/api/soft-delete/restore",
@@ -322,6 +334,27 @@ export class ApiClient implements RecruitmentApi {
         headers: { "Content-Type": "application/json" },
         method: "POST"
       }
+    );
+  }
+
+  applyCorrection(input: { entityType: string; entityId: string; fieldName: string; newValue: string | null; reason?: string }) {
+    return this.request<CorrectionRecord>("/api/correction/apply", {
+      body: JSON.stringify({
+        entity_type: input.entityType,
+        entity_id: input.entityId,
+        field_name: input.fieldName,
+        new_value: input.newValue,
+        reason: input.reason
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  undoCorrection(correctionId: string) {
+    return this.request<CorrectionRecord>(
+      `/api/correction/${encodeURIComponent(correctionId)}/undo`,
+      { method: "POST" }
     );
   }
 

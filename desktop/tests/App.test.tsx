@@ -114,7 +114,24 @@ function fakeApi(): RecruitmentApi {
     getCandidateContact: async () => ({ email: "zhang@example.com", phone: "13800138000", email_confidence: 0.9, phone_confidence: 0.9 }),
     updateCandidateContact: async (_candidateId, input) => ({ email: input.email, phone: input.phone, email_confidence: 1.0, phone_confidence: 1.0 }),
     listDeleted: async () => [],
+    softDelete: async (entityType, entityId) => ({ entity_type: entityType, entity_id: entityId, deleted: true }),
     restoreDeleted: async () => ({ entity_type: "candidate", entity_id: "candidate-1", deleted: false }),
+    applyCorrection: async (input) => ({
+      correction_id: "correction-1",
+      entity_type: input.entityType,
+      field_name: input.fieldName,
+      old_value: "张三",
+      new_value: input.newValue,
+      reverted: false
+    }),
+    undoCorrection: async () => ({
+      correction_id: "correction-1",
+      entity_type: "candidate",
+      field_name: "display_name",
+      old_value: "张三",
+      new_value: "张四",
+      reverted: true
+    }),
     exportMappingTree: async () => undefined,
     exportMappingTreePdf: async () => undefined,
     getSettings: async () => ({}),
@@ -338,6 +355,23 @@ describe("desktop recruitment workflow", () => {
     await user.click(screen.getByRole("button", { name: "保存联系方式" }));
 
     expect(email).toHaveValue("new@example.com");
+  });
+
+  test("corrects, undoes, and soft-deletes a candidate", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.type(screen.getByPlaceholderText("搜索人才、技能、公司或自然语言"), "Python");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+    await user.type(screen.getByLabelText("候选人显示名称"), "张四");
+    await user.click(screen.getByRole("button", { name: "保存名称更正" }));
+    expect(await screen.findByText("更正已保存")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "撤销本次更正" }));
+    expect(await screen.findByText("更正已撤销")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "移入回收站" }));
+
+    expect(screen.queryByRole("complementary", { name: "候选人详情" })).not.toBeInTheDocument();
   });
 
   test("tests configured providers and explains when saved settings apply", async () => {

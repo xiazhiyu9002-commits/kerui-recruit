@@ -150,6 +150,15 @@ export interface DeletedItem {
   deleted_at: string | null;
 }
 
+export interface CorrectionRecord {
+  correction_id: string;
+  entity_type: string;
+  field_name: string;
+  old_value: string | null;
+  new_value: string | null;
+  reverted: boolean;
+}
+
 export interface AppSettings {
   deepseek_api_key?: string;
   deepseek_base_url?: string;
@@ -244,7 +253,10 @@ export interface RecruitmentApi {
   getCandidateContact(candidateId: string): Promise<CandidateContact>;
   updateCandidateContact(candidateId: string, input: { email: string | null; phone: string | null }): Promise<CandidateContact>;
   listDeleted(): Promise<DeletedItem[]>;
+  softDelete(entityType: "candidate" | "jd", entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
   restoreDeleted(entityType: string, entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
+  applyCorrection(input: { entityType: string; entityId: string; fieldName: string; newValue: string | null; reason?: string }): Promise<CorrectionRecord>;
+  undoCorrection(correctionId: string): Promise<CorrectionRecord>;
   exportMappingTree(snapshotId: string): Promise<void>;
   exportMappingTreePdf(snapshotId: string): Promise<void>;
   getSettings(): Promise<AppSettings>;
@@ -353,6 +365,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [resumeRevisions, setResumeRevisions] = useState<ResumeRevision[]>([]);
   const [contactEmail, setContactEmail] = useState("");
   const [contactPhone, setContactPhone] = useState("");
+  const [correctedName, setCorrectedName] = useState("");
+  const [lastCorrectionId, setLastCorrectionId] = useState<string | null>(null);
+  const [correctionMessage, setCorrectionMessage] = useState("");
 
   // 回收站
   const [deletedItems, setDeletedItems] = useState<DeletedItem[]>([]);
@@ -649,6 +664,9 @@ export function App({ api }: { api: RecruitmentApi }) {
     setCaseEvents([]);
     setSelectedContact(null);
     setResumeRevisions([]);
+    setCorrectedName("");
+    setLastCorrectionId(null);
+    setCorrectionMessage("");
     setError(null);
     try {
       setSelectedCases(await api.listCases(item.candidate_id));
@@ -673,6 +691,48 @@ export function App({ api }: { api: RecruitmentApi }) {
       })));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "简历版本切换失败");
+    }
+  }
+
+  async function correctCandidateName() {
+    if (!selected || !correctedName.trim()) return;
+    setError(null);
+    try {
+      const correction = await api.applyCorrection({
+        entityType: "candidate",
+        entityId: selected.candidate_id,
+        fieldName: "display_name",
+        newValue: correctedName.trim(),
+        reason: "用户在候选人详情中更正姓名"
+      });
+      setLastCorrectionId(correction.correction_id);
+      setCorrectionMessage("更正已保存");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "资料更正失败");
+    }
+  }
+
+  async function undoCandidateCorrection() {
+    if (!lastCorrectionId) return;
+    setError(null);
+    try {
+      await api.undoCorrection(lastCorrectionId);
+      setLastCorrectionId(null);
+      setCorrectionMessage("更正已撤销");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "撤销更正失败");
+    }
+  }
+
+  async function deleteSelectedCandidate() {
+    if (!selected) return;
+    setError(null);
+    try {
+      await api.softDelete("candidate", selected.candidate_id);
+      setResults((items) => items.filter((item) => item.candidate_id !== selected.candidate_id));
+      setSelected(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "移入回收站失败");
     }
   }
 
@@ -1504,6 +1564,27 @@ export function App({ api }: { api: RecruitmentApi }) {
             <div><small>当前地点</small><strong>{selected.location ?? "待核验"}</strong></div>
             <div><small>融合得分</small><strong>{selected.score.toFixed(3)}</strong></div>
           </div>
+
+          <section className="case-section" aria-label="资料更正">
+            <h3>资料更正</h3>
+            <div className="contact-form">
+              <label>
+                显示名称
+                <input
+                  value={correctedName}
+                  onChange={(event) => setCorrectedName(event.target.value)}
+                  placeholder="输入更正后的姓名"
+                  aria-label="候选人显示名称"
+                />
+              </label>
+              <div className="case-actions">
+                <button className="detail-button" onClick={() => void correctCandidateName()}>保存名称更正</button>
+                {lastCorrectionId && <button className="detail-button" onClick={() => void undoCandidateCorrection()}>撤销本次更正</button>}
+                <button className="detail-button" onClick={() => void deleteSelectedCandidate()}>移入回收站</button>
+              </div>
+              {correctionMessage && <p role="status">{correctionMessage}</p>}
+            </div>
+          </section>
 
           <section className="case-section" aria-label="联系方式">
             <h3>联系方式</h3>

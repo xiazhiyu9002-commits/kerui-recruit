@@ -8,6 +8,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from kerui_recruit.db.models import CorrectionLog
 
 
+_CORRECTABLE_FIELDS: dict[str, frozenset[str]] = {
+    "candidate": frozenset({"display_name", "status", "total_years", "highest_degree"}),
+    "jd": frozenset({"company", "title", "status", "priority"}),
+    "jd_revision": frozenset({"source_text"}),
+    "resume_revision": frozenset({"display_name"}),
+}
+
+
 class CorrectionService:
     """Append-only correction log with undo support.
 
@@ -27,6 +35,7 @@ class CorrectionService:
         new_value: str | None,
         reason: str | None = None,
     ) -> CorrectionLog:
+        _validate_field(entity_type, field_name)
         with self.session_factory() as session:
             old_value = self._current_value(session, entity_type, entity_id, field_name)
 
@@ -95,3 +104,8 @@ def _lookup(session: Session, entity_type: str, entity_id: str) -> Any:
     if entity is None:
         raise LookupError(f"{entity_type} not found: {entity_id}")
     return entity
+
+
+def _validate_field(entity_type: str, field_name: str) -> None:
+    if field_name not in _CORRECTABLE_FIELDS.get(entity_type, frozenset()):
+        raise ValueError(f"{entity_type}.{field_name} cannot be corrected")
