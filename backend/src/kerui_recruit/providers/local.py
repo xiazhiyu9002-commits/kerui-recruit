@@ -8,6 +8,33 @@ from kerui_recruit.jd.structured import ParsedJd
 from kerui_recruit.resumes.structured import ParsedResume
 
 
+_EXPERIENCE_PATTERNS = (
+    re.compile(
+        r"(?P<years>(?<!\d)\d{1,2}(?:\.\d+)?)(?!\d)\s*年\s*"
+        r"(?:及?\s*以上\s*)?(?:工作|从业|相关)?\s*(?:经验|经历)",
+        re.I,
+    ),
+    re.compile(
+        r"(?:工作|从业|相关)\s*(?:经验|经历|年限)\s*[:：]?\s*"
+        r"(?P<years>(?<!\d)\d{1,2}(?:\.\d+)?)(?!\d)\s*年",
+        re.I,
+    ),
+    re.compile(
+        r"(?P<years>(?<!\d)\d{1,2}(?:\.\d+)?)(?!\d)\s*"
+        r"years?\s+(?:of\s+)?experience",
+        re.I,
+    ),
+)
+
+
+def _extract_experience_years(text: str) -> float | None:
+    for pattern in _EXPERIENCE_PATTERNS:
+        match = pattern.search(text)
+        if match is not None:
+            return float(match.group("years"))
+    return None
+
+
 class LocalHashEmbeddingProvider:
     """Deterministic packaged fallback used before a model API is configured."""
 
@@ -54,8 +81,7 @@ class LocalResumeParser:
 
     async def parse_resume(self, text: str) -> ParsedResume:
         compact = " ".join(text.split())
-        years_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:年|years?)", compact, re.I)
-        total_years = float(years_match.group(1)) if years_match else None
+        total_years = _extract_experience_years(compact)
         degree = None
         for token, normalized in (
             ("博士", "DOCTOR"), ("PhD", "DOCTOR"),
@@ -100,8 +126,7 @@ class LocalJdParser:
 
     async def parse_jd(self, text: str) -> ParsedJd:
         compact = " ".join(text.split())
-        years_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:年|years?)", compact, re.I)
-        min_years = float(years_match.group(1)) if years_match else None
+        min_years = _extract_experience_years(compact)
         degree = None
         for token, normalized in (
             ("博士", "博士"), ("PhD", "博士"),
