@@ -171,4 +171,26 @@ describe("ApiClient", () => {
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/resumes/revisions/resume%2Frev-1/switch");
     expect(received[1].method).toBe("POST");
   });
+
+  test("posts batch matches and result marks", async () => {
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify(received.length === 1
+        ? { results: [] }
+        : { result_id: "result-1", status: "短名单" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.matchBatch(["rev-1", "rev-2"], 30);
+    await client.markMatchResult("result/1", "短名单");
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/match/batch");
+    expect(await received[0].json()).toEqual({ revision_ids: ["rev-1", "rev-2"], limit: 30 });
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/match/result/result%2F1/mark");
+    expect(await received[1].json()).toEqual({ status: "短名单" });
+  });
 });

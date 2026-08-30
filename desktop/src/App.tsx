@@ -30,6 +30,7 @@ export interface CandidateSearchItem {
   total_years: number | null;
   highest_degree: string | null;
   location: string | null;
+  result_id?: string | null;
 }
 
 export interface CandidateSearchResult {
@@ -62,6 +63,14 @@ export interface MatchRun {
   run_id: string;
   items: CandidateSearchItem[];
 }
+
+export interface BatchMatchResult {
+  revision_id: string;
+  run_id: string;
+  items: CandidateSearchItem[];
+}
+
+export type MatchMarkStatus = "未处理" | "保留" | "短名单" | "排除";
 
 export interface DiagnosticsData {
   sqlite_version: string;
@@ -211,6 +220,8 @@ export interface RecruitmentApi {
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
   importJdFile(file: File, company: string, title: string): Promise<ImportedJd>;
   matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
+  matchBatch(revisionIds: string[], limit?: number): Promise<{ results: BatchMatchResult[] }>;
+  markMatchResult(resultId: string, status: MatchMarkStatus): Promise<{ result_id: string; status: MatchMarkStatus }>;
   health(): Promise<Record<string, { status: string; message?: string }>>;
   diagnostics(): Promise<DiagnosticsData>;
   listMappingProjects(): Promise<MappingProject[]>;
@@ -304,6 +315,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 人岗匹配
   const [matchRevision, setMatchRevision] = useState("");
   const [matchRun, setMatchRun] = useState<MatchRun | null>(null);
+  const [batchRevisions, setBatchRevisions] = useState("");
+  const [batchMatchCount, setBatchMatchCount] = useState<number | null>(null);
+  const [matchMarks, setMatchMarks] = useState<Record<string, MatchMarkStatus>>({});
 
   // 设置 / 健康
   const [health, setHealth] = useState<Record<string, { status: string; message?: string }> | null>(null);
@@ -488,6 +502,29 @@ export function App({ api }: { api: RecruitmentApi }) {
       setMatchRun(result);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "匹配失败");
+    }
+  }
+
+  async function runBatchMatch(event: FormEvent) {
+    event.preventDefault();
+    const revisionIds = batchRevisions.split(/[\s,，]+/).map((id) => id.trim()).filter(Boolean);
+    if (revisionIds.length === 0) return;
+    setError(null);
+    try {
+      const response = await api.matchBatch(revisionIds, 20);
+      setBatchMatchCount(response.results.length);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "批量匹配失败");
+    }
+  }
+
+  async function markMatch(resultId: string, status: MatchMarkStatus) {
+    setError(null);
+    try {
+      const marked = await api.markMatchResult(resultId, status);
+      setMatchMarks((current) => ({ ...current, [marked.result_id]: marked.status }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "匹配结果标记失败");
     }
   }
 
@@ -1021,6 +1058,16 @@ export function App({ api }: { api: RecruitmentApi }) {
               <input value={matchRevision} onChange={(e) => setMatchRevision(e.target.value)} placeholder="JD 版本 ID" aria-label="匹配 JD 版本" />
               <button type="submit">开始匹配</button>
             </form>
+            <form className="jd-form" onSubmit={(event) => void runBatchMatch(event)}>
+              <textarea
+                value={batchRevisions}
+                onChange={(event) => setBatchRevisions(event.target.value)}
+                placeholder="每行一个 JD 版本 ID"
+                aria-label="批量 JD 版本"
+              />
+              <button type="submit">批量匹配</button>
+            </form>
+            {batchMatchCount !== null && <p role="status">已完成 {batchMatchCount} 个 JD 的批量匹配</p>}
             {matchRun && (
               <div className="results-card">
                 <div className="section-heading">
@@ -1032,7 +1079,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <div className="empty-state"><strong>暂无匹配候选人</strong></div>
                 ) : (
                   <table>
-                    <thead><tr><th>候选人</th><th>得分</th><th>经验</th><th>学历</th></tr></thead>
+                    <thead><tr><th>候选人</th><th>得分</th><th>经验</th><th>学历</th><th>处理</th></tr></thead>
                     <tbody>
                       {matchRun.items.map((item) => (
                         <tr key={item.candidate_id}>
@@ -1040,6 +1087,15 @@ export function App({ api }: { api: RecruitmentApi }) {
                           <td>{item.score.toFixed(3)}</td>
                           <td>{item.total_years ?? "—"} 年</td>
                           <td>{item.highest_degree ?? "待核验"}</td>
+                          <td>
+                            {item.result_id ? (
+                              <div className="case-actions">
+                                {matchMarks[item.result_id] && <span>{matchMarks[item.result_id]}</span>}
+                                <button className="detail-button" onClick={() => void markMatch(item.result_id!, "短名单")}>加入短名单</button>
+                                <button className="detail-button" onClick={() => void markMatch(item.result_id!, "排除")}>排除</button>
+                              </div>
+                            ) : "—"}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

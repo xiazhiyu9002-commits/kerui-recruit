@@ -14,6 +14,7 @@ import type {
   MappingProject,
   MappingSnapshot,
   MappingTreeNode,
+  MatchMarkStatus,
   MigrationReport,
   OnboardingStatus,
   ProviderCheck,
@@ -142,6 +143,28 @@ export class ApiClient implements RecruitmentApi {
       "/api/match/jd",
       {
         body: JSON.stringify({ revision_id: revisionId, limit }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  matchBatch(revisionIds: string[], limit = 20) {
+    return this.request<{ results: { revision_id: string; run_id: string; items: CandidateSearchResult["items"] }[] }>(
+      "/api/match/batch",
+      {
+        body: JSON.stringify({ revision_ids: revisionIds, limit }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  markMatchResult(resultId: string, status: MatchMarkStatus) {
+    return this.request<{ result_id: string; status: MatchMarkStatus }>(
+      `/api/match/result/${encodeURIComponent(resultId)}/mark`,
+      {
+        body: JSON.stringify({ status }),
         headers: { "Content-Type": "application/json" },
         method: "POST"
       }

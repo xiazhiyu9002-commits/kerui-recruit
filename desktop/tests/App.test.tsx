@@ -71,6 +71,14 @@ function fakeApi(): RecruitmentApi {
         }
       ]
     }),
+    matchBatch: async (revisionIds) => ({
+      results: revisionIds.map((revisionId) => ({
+        revision_id: revisionId,
+        run_id: `run-${revisionId}`,
+        items: []
+      }))
+    }),
+    markMatchResult: async (resultId, status) => ({ result_id: resultId, status }),
     health: async () => ({
       database: { status: "healthy" },
       search: { status: "healthy" }
@@ -232,6 +240,36 @@ describe("desktop recruitment workflow", () => {
 
     expect(await screen.findByText("匹配结果")).toBeVisible();
     expect(screen.getByText("张三 Python 金融风控")).toBeVisible();
+  });
+
+  test("runs batch matching and marks a candidate result", async () => {
+    const user = userEvent.setup();
+    const api = fakeApi();
+    api.matchJd = async () => ({
+      run_id: "run-1",
+      items: [{
+        candidate_id: "candidate-1",
+        revision_id: "revision-1",
+        result_id: "result-1",
+        content: "张三 Python 金融风控",
+        score: 0.95,
+        matched_channels: ["bm25", "vector"],
+        total_years: 6,
+        highest_degree: "MASTER",
+        location: "上海"
+      }]
+    });
+    render(<App api={api} />);
+
+    await user.click(screen.getByText("人岗匹配"));
+    await user.type(screen.getByLabelText("匹配 JD 版本"), "rev-1");
+    await user.click(screen.getByRole("button", { name: "开始匹配" }));
+    await user.click(await screen.findByRole("button", { name: "加入短名单" }));
+    expect(await screen.findByText("短名单")).toBeVisible();
+
+    await user.type(screen.getByLabelText("批量 JD 版本"), "rev-1\nrev-2");
+    await user.click(screen.getByRole("button", { name: "批量匹配" }));
+    expect(await screen.findByText("已完成 2 个 JD 的批量匹配")).toBeVisible();
   });
 
   test("loads the recruitment dashboard", async () => {
