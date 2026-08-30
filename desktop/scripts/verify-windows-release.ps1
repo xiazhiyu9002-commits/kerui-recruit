@@ -73,7 +73,7 @@ function Invoke-IsolatedInstallCycle([IO.FileInfo]$Current, [IO.FileInfo]$Previo
 
     $process = Start-IsolatedApplication $application $localData $roamingData
     try {
-        $database = Join-Path $localData 'KeRuiRecruit\recruit.sqlite3'
+        $database = Join-Path $localData 'KeRuiRecruit\db\recruit.sqlite3'
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not (Test-Path -LiteralPath $database) -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 250
