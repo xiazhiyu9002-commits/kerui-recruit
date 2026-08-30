@@ -20,7 +20,7 @@ The script intentionally retains its isolated test directory as evidence. Remove
 
 ## Current status
 
-- Functional inspection: automated by the script.
-- Clean installation cycle: must be run on a disposable Windows test account/VM before release.
+- Functional inspection: passed for the 2026-08-30 internal acceptance artifact.
+- Isolated clean installation, launch/database initialization, uninstall and retained-data cycle: passed on Windows 11.
 - Upgrade cycle: requires a previous released installer.
-- Authenticode signing: reported separately; an unsigned artifact is not production-ready.
+- Authenticode signing: `NotSigned`; the artifact is not production-ready.

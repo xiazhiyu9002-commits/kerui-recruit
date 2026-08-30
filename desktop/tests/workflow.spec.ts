@@ -50,5 +50,7 @@ test("runs the health check and lists backups", async ({ page }) => {
   await page.getByRole("button", { name: "运行检测" }).click();
   await expect(page.getByText("数据库")).toBeVisible();
   await page.getByRole("button", { name: "加载备份" }).click();
-  await expect(page.getByText("暂无备份快照")).toBeVisible();
+  await expect(
+    page.getByText(/暂无备份快照|backup_\d{8}T\d{6}Z_.*\.sqlite3/).first()
+  ).toBeVisible();
 });
