@@ -70,7 +70,7 @@ def test_incremental_writes_do_not_rebuild_fts_and_optimize_in_batches(
     assert database.table.optimize_calls == 1
 
 
-def test_warmup_finishes_a_pending_partial_index_batch(tmp_path: Path) -> None:
+def test_pending_partial_index_is_optimized_separately_from_warmup(tmp_path: Path) -> None:
     index = LanceDBSearchIndex(tmp_path / "search", vector_dimension=2)
     database = FakeDatabase()
     database.exists = True
@@ -78,5 +78,9 @@ def test_warmup_finishes_a_pending_partial_index_batch(tmp_path: Path) -> None:
     index._dirty_marker.touch()
 
     assert index.warmup() == 21
+    assert database.table.optimize_calls == 0
+    assert index._dirty_marker.exists()
+
+    assert index.optimize_pending() is True
     assert database.table.optimize_calls == 1
     assert not index._dirty_marker.exists()

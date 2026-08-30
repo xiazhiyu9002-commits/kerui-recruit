@@ -245,7 +245,15 @@ def create_runtime_app(settings: Settings) -> FastAPI:
     async def lifespan(_: FastAPI):
         runtime.services.task_repository.recover_expired_leases()
         runtime.services.search_service.warmup()
-        worker_task = asyncio.create_task(_worker_loop(runtime.worker))
+        worker_task = asyncio.create_task(
+            _worker_after_index_maintenance(
+                runtime.worker,
+                runtime.services.search_service,
+            )
+        )
+        lease_recovery_task = asyncio.create_task(
+            _lease_recovery_loop(runtime.services.task_repository)
+        )
         scheduler_task = asyncio.create_task(
             runtime.services.scheduler_service.run_forever(interval_seconds=300)
         )
@@ -253,9 +261,12 @@ def create_runtime_app(settings: Settings) -> FastAPI:
             yield
         finally:
             worker_task.cancel()
+            lease_recovery_task.cancel()
             scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
                 await worker_task
+            with suppress(asyncio.CancelledError):
+                await lease_recovery_task
             with suppress(asyncio.CancelledError):
                 await scheduler_task
             if runtime.providers.http_client is not None:
@@ -271,3 +282,26 @@ async def _worker_loop(worker: TaskWorker) -> None:
         # Always yield after a claimed task so a large batch cannot starve API
         # responses and desktop health checks on the same event loop.
         await asyncio.sleep(0 if worked else 0.25)
+
+
+async def _worker_after_index_maintenance(
+    worker: TaskWorker,
+    search_service: HybridSearchService,
+) -> None:
+    try:
+        await asyncio.to_thread(search_service.optimize_pending)
+    except Exception:
+        # The index is a rebuildable projection. A maintenance failure must not
+        # stop durable SQLite tasks from continuing on the next worker cycle.
+        pass
+    await _worker_loop(worker)
+
+
+async def _lease_recovery_loop(
+    repository: TaskRepository,
+    *,
+    interval_seconds: float = 30,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        await asyncio.to_thread(repository.recover_expired_leases)

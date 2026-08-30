@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from pathlib import Path
 
 import httpx
@@ -8,7 +9,12 @@ import pytest
 from kerui_recruit.core.settings import Settings
 from kerui_recruit.db.models import ResumeRevision, TaskRecord
 from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
-from kerui_recruit.runtime import _worker_loop, build_runtime, create_runtime_app
+from kerui_recruit.runtime import (
+    _lease_recovery_loop,
+    _worker_loop,
+    build_runtime,
+    create_runtime_app,
+)
 from kerui_recruit.search.contracts import CandidateFilters
 
 
@@ -76,3 +82,23 @@ async def test_busy_local_worker_yields_to_api_requests() -> None:
         await task
 
     assert observed_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_periodically_recovers_expired_task_leases() -> None:
+    class Repository:
+        def __init__(self) -> None:
+            self.called = threading.Event()
+
+        def recover_expired_leases(self) -> int:
+            self.called.set()
+            return 1
+
+    repository = Repository()
+    task = asyncio.create_task(
+        _lease_recovery_loop(repository, interval_seconds=0.01)  # type: ignore[arg-type]
+    )
+    assert await asyncio.to_thread(repository.called.wait, 0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

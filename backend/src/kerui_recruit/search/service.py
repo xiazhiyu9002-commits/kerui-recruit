@@ -26,6 +26,9 @@ class HybridSearchService:
         """Preload the index and return the number of indexed chunks."""
         return self.index.warmup()
 
+    def optimize_pending(self) -> bool:
+        return self.index.optimize_pending()
+
     async def search(
         self,
         query: str,

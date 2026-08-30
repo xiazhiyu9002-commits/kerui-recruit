@@ -78,12 +78,16 @@ class LanceDBSearchIndex:
         """Open the index table and return its row count to preload it."""
         if not self._table_exists():
             return 0
-        table = self.database.open_table(self.table_name)
-        if self._dirty_marker.exists():
-            table.optimize()
-            self._dirty_marker.unlink(missing_ok=True)
-            self._pending_modifications = 0
-        return table.count_rows()
+        return self.database.open_table(self.table_name).count_rows()
+
+    def optimize_pending(self) -> bool:
+        """Add the last partial write batch to FTS without blocking readiness."""
+        if not self._table_exists() or not self._dirty_marker.exists():
+            return False
+        self.database.open_table(self.table_name).optimize()
+        self._dirty_marker.unlink(missing_ok=True)
+        self._pending_modifications = 0
+        return True
 
     def search(self, request: SearchRequest) -> list[SearchHit]:
         if not self._table_exists():
