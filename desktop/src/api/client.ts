@@ -181,6 +181,10 @@ export class ApiClient implements RecruitmentApi {
     return this.request<DiagnosticsData>("/api/diagnostics");
   }
 
+  async exportDiagnostics() {
+    await this.download("/api/diagnostics/export", "diagnostics.json");
+  }
+
   listMappingProjects() {
     return this.request<MappingProject[]>("/api/mapping/projects");
   }
@@ -409,6 +413,25 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
+  createPortableBackup(targetPath: string, passphrase: string) {
+    return this.request<{ path: string; same_volume: boolean }>("/api/backup/portable", {
+      body: JSON.stringify({ target_path: targetPath, passphrase }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  restorePortableBackup(backupPath: string, targetRoot: string, passphrase: string) {
+    return this.request<{ target_root: string; files_restored: number; files_verified: number; ok: boolean }>(
+      "/api/backup/portable/restore",
+      {
+        body: JSON.stringify({ backup_path: backupPath, target_root: targetRoot, passphrase }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
   listReminders() {
     return this.request<ReminderItem[]>("/api/reminders");
   }
@@ -438,6 +461,20 @@ export class ApiClient implements RecruitmentApi {
 
   async setDataRoot(path: string) {
     return invoke<string>("set_data_root", { path });
+  }
+
+  private async download(path: string, filename: string) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(`${this.baseUrl}${path}`, { headers });
+    if (!response.ok) throw new Error("导出失败");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -90,6 +90,7 @@ function fakeApi(): RecruitmentApi {
       counts: { candidate: 3, jd: 1 },
       pragmas: { journal_mode: "wal" }
     }),
+    exportDiagnostics: async () => undefined,
     listMappingProjects: async () => [],
     createMappingProject: async (name: string) => ({ id: "proj-1", name, description: null }),
     buildMappingTree: async () => ({ id: "snap-1", label: "v1", is_current: true }),
@@ -122,6 +123,8 @@ function fakeApi(): RecruitmentApi {
     listBackups: async () => [],
     createBackup: async () => ({ filename: "backup_1.sqlite3", path: "/tmp/backup_1.sqlite3" }),
     restoreBackup: async () => ({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" }),
+    createPortableBackup: async (targetPath) => ({ path: targetPath, same_volume: false }),
+    restorePortableBackup: async (_backupPath, targetRoot) => ({ target_root: targetRoot, files_restored: 3, files_verified: 3, ok: true }),
     listReminders: async () => [],
     createReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: false, dismissed_at: null }),
     dismissReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: true, dismissed_at: "2026-08-29T10:00:00" }),
@@ -348,5 +351,17 @@ describe("desktop recruitment workflow", () => {
     await user.type(screen.getByLabelText("DeepSeek 模型"), "deepseek-v4-flash");
     await user.click(screen.getByRole("button", { name: "保存设置" }));
     expect(await screen.findByText("设置已保存，重启应用后生效")).toBeVisible();
+  });
+
+  test("creates a password-protected portable backup from settings", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.click(screen.getByText("设置"));
+    await user.type(screen.getByLabelText("便携备份路径"), "D:\\Backup\\kerui.krbackup");
+    await user.type(screen.getByLabelText("便携备份口令"), "strong-passphrase");
+    await user.click(screen.getByRole("button", { name: "创建加密便携备份" }));
+
+    expect(await screen.findByText(/便携备份已创建/)).toBeVisible();
   });
 });

@@ -224,6 +224,7 @@ export interface RecruitmentApi {
   markMatchResult(resultId: string, status: MatchMarkStatus): Promise<{ result_id: string; status: MatchMarkStatus }>;
   health(): Promise<Record<string, { status: string; message?: string }>>;
   diagnostics(): Promise<DiagnosticsData>;
+  exportDiagnostics(): Promise<void>;
   listMappingProjects(): Promise<MappingProject[]>;
   createMappingProject(name: string, description?: string): Promise<MappingProject>;
   buildMappingTree(projectId: string, text: string, label?: string): Promise<MappingSnapshot>;
@@ -252,6 +253,8 @@ export interface RecruitmentApi {
   listBackups(): Promise<BackupSnapshot[]>;
   createBackup(label?: string): Promise<{ filename: string; path: string }>;
   restoreBackup(filename: string): Promise<{ restored_from: string; safety_backup: string }>;
+  createPortableBackup(targetPath: string, passphrase: string): Promise<{ path: string; same_volume: boolean }>;
+  restorePortableBackup(backupPath: string, targetRoot: string, passphrase: string): Promise<{ target_root: string; files_restored: number; files_verified: number; ok: boolean }>;
   listReminders(): Promise<ReminderItem[]>;
   createReminder(input: { title: string; remind_at: string; note?: string }): Promise<ReminderItem>;
   dismissReminder(id: string): Promise<ReminderItem>;
@@ -363,6 +366,11 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   // 备份与恢复
   const [backups, setBackups] = useState<BackupSnapshot[]>([]);
+  const [portableBackupPath, setPortableBackupPath] = useState("");
+  const [portableRestorePath, setPortableRestorePath] = useState("");
+  const [portableRestoreTarget, setPortableRestoreTarget] = useState("");
+  const [portablePassphrase, setPortablePassphrase] = useState("");
+  const [portableMessage, setPortableMessage] = useState("");
 
   // 提醒
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
@@ -543,6 +551,15 @@ export function App({ api }: { api: RecruitmentApi }) {
       setDiagnostics(await api.diagnostics());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "诊断信息加载失败");
+    }
+  }
+
+  async function exportDiagnostics() {
+    setError(null);
+    try {
+      await api.exportDiagnostics();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "诊断信息导出失败");
     }
   }
 
@@ -816,6 +833,34 @@ export function App({ api }: { api: RecruitmentApi }) {
       setBackups(await api.listBackups());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "恢复失败");
+    }
+  }
+
+  async function createPortableBackup() {
+    if (!portableBackupPath.trim() || !portablePassphrase) return;
+    setError(null);
+    try {
+      const result = await api.createPortableBackup(portableBackupPath.trim(), portablePassphrase);
+      setPortableMessage(`便携备份已创建：${result.path}`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "便携备份创建失败");
+    }
+  }
+
+  async function restorePortableBackup() {
+    if (!portableRestorePath.trim() || !portableRestoreTarget.trim() || !portablePassphrase) return;
+    setError(null);
+    try {
+      const result = await api.restorePortableBackup(
+        portableRestorePath.trim(),
+        portableRestoreTarget.trim(),
+        portablePassphrase
+      );
+      setPortableMessage(result.ok
+        ? `便携备份恢复并校验完成：${result.files_verified} 个文件`
+        : "便携备份恢复校验未通过");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "便携备份恢复失败");
     }
   }
 
@@ -1300,7 +1345,13 @@ export function App({ api }: { api: RecruitmentApi }) {
             </div>
             {dataRootMessage && <p className="muted">{dataRootMessage}</p>}
 
-            <div className="section-heading" style={{ marginTop: 20 }}><h2>健康检测台</h2><button className="import-button" onClick={() => void checkHealth()}>运行检测</button></div>
+            <div className="section-heading" style={{ marginTop: 20 }}>
+              <h2>健康检测台</h2>
+              <div className="case-actions">
+                <button className="import-button" onClick={() => void checkHealth()}>运行检测</button>
+                <button className="import-button" onClick={() => void exportDiagnostics()}>导出诊断信息</button>
+              </div>
+            </div>
             {health && (
               <div className="health-grid">
                 {Object.entries(health).map(([name, component]) => (
@@ -1387,6 +1438,38 @@ export function App({ api }: { api: RecruitmentApi }) {
                   ))}
                 </div>
               )}
+              <div className="jd-form" style={{ marginTop: 16 }}>
+                <input
+                  value={portableBackupPath}
+                  onChange={(event) => setPortableBackupPath(event.target.value)}
+                  placeholder="便携备份文件路径"
+                  aria-label="便携备份路径"
+                />
+                <input
+                  value={portablePassphrase}
+                  onChange={(event) => setPortablePassphrase(event.target.value)}
+                  placeholder="加密口令"
+                  aria-label="便携备份口令"
+                  type="password"
+                />
+                <button type="button" onClick={() => void createPortableBackup()}>创建加密便携备份</button>
+                <div className="jd-row">
+                  <input
+                    value={portableRestorePath}
+                    onChange={(event) => setPortableRestorePath(event.target.value)}
+                    placeholder="待恢复的便携备份文件"
+                    aria-label="便携备份恢复文件"
+                  />
+                  <input
+                    value={portableRestoreTarget}
+                    onChange={(event) => setPortableRestoreTarget(event.target.value)}
+                    placeholder="恢复目标目录"
+                    aria-label="便携备份恢复目录"
+                  />
+                </div>
+                <button type="button" onClick={() => void restorePortableBackup()}>恢复便携备份</button>
+                {portableMessage && <p role="status">{portableMessage}</p>}
+              </div>
             </div>
 
             <div className="case-section">

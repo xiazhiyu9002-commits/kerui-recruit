@@ -193,4 +193,26 @@ describe("ApiClient", () => {
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/match/result/result%2F1/mark");
     expect(await received[1].json()).toEqual({ status: "短名单" });
   });
+
+  test("posts portable backup and restore requests", async () => {
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify(received.length === 1
+        ? { path: "D:/backup.krbackup", same_volume: false }
+        : { target_root: "D:/restored", files_restored: 2, files_verified: 2, ok: true }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.createPortableBackup("D:/backup.krbackup", "passphrase");
+    await client.restorePortableBackup("D:/backup.krbackup", "D:/restored", "passphrase");
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/backup/portable");
+    expect(await received[0].json()).toEqual({ target_path: "D:/backup.krbackup", passphrase: "passphrase" });
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/backup/portable/restore");
+    expect(await received[1].json()).toEqual({ backup_path: "D:/backup.krbackup", target_root: "D:/restored", passphrase: "passphrase" });
+  });
 });
