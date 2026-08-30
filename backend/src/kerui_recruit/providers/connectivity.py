@@ -7,6 +7,13 @@ from kerui_recruit.providers.factory import ProviderBundle
 from kerui_recruit.providers.websearch import WebSearchProvider
 
 
+_LLM_PROBE_RESUME = """测试候选人
+技能：Python、SQL
+工作经历：软件工程师，负责业务系统开发与维护，5 年工作经验。
+教育经历：计算机科学与技术，本科。
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderCheck:
     name: str
@@ -39,7 +46,7 @@ class ProviderConnectivityService:
         if not self._settings.llm_enabled:
             return ProviderCheck("llm", True, "本地离线解析模式")
         try:
-            await self._providers.parser.parse_resume("测试")
+            await self._providers.parser.parse_resume(_LLM_PROBE_RESUME)
             return ProviderCheck("llm", True, "可用")
         except Exception:
             return ProviderCheck("llm", False, "调用失败")

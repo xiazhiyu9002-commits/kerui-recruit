@@ -61,3 +61,34 @@ async def test_connectivity_reports_failure_for_broken_llm(tmp_path: Path) -> No
 
     assert by_name["llm"].ok is False
     assert by_name["llm"].message == "调用失败"
+
+
+@pytest.mark.asyncio
+async def test_connectivity_uses_a_schema_parseable_llm_probe(tmp_path: Path) -> None:
+    class SchemaAwareParser:
+        async def parse_resume(self, text: str):
+            if "工作经历" not in text or "教育经历" not in text:
+                raise ValueError("resume probe is too incomplete")
+            return {"name": "测试候选人"}
+
+    settings = Settings(
+        data_root=tmp_path / "data",
+        session_token=SecretStr("token"),
+        deepseek_api_key=SecretStr("key"),
+    )
+    providers = ProviderBundle(
+        parser=SchemaAwareParser(),
+        jd_parser=LocalResumeParser(),
+        embedding=LocalHashEmbeddingProvider(dimension=64),
+        reranker=LocalKeywordReranker(),
+        ocr=None,
+        vector_dimension=64,
+        http_client=None,
+    )
+
+    checks = await ProviderConnectivityService(
+        settings=settings,
+        providers=providers,
+    ).check()
+
+    assert {check.name: check for check in checks}["llm"].ok is True
