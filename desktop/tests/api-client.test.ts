@@ -147,4 +147,28 @@ describe("ApiClient", () => {
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/tasks/task%2F1/pause");
     expect(received[1].method).toBe("POST");
   });
+
+  test("imports JD files and switches resume revisions", async () => {
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      const payload = received.length === 1
+        ? { jd_id: "jd-1", revision_id: "jd-rev-1" }
+        : { revision_id: "resume-rev-1", original_filename: "resume.pdf", status: "READY", is_current: true, created_at: "2026-08-30T00:00:00Z" };
+      return new Response(JSON.stringify(payload), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.importJdFile(new File(["jd"], "岗位.docx"), "某公司", "后端工程师");
+    await client.switchResumeRevision("resume/rev-1");
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/jd/import-file");
+    expect(received[0].method).toBe("POST");
+    expect(received[0].headers.get("Content-Type")).toMatch(/^multipart\/form-data; boundary=/);
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/resumes/revisions/resume%2Frev-1/switch");
+    expect(received[1].method).toBe("POST");
+  });
 });

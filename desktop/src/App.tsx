@@ -44,6 +44,15 @@ export interface CandidateContact {
   phone_confidence: number | null;
 }
 
+export interface ResumeRevision {
+  revision_id: string;
+  display_name: string | null;
+  original_filename: string;
+  status: string;
+  is_current: boolean;
+  created_at: string;
+}
+
 export interface ImportedJd {
   jd_id: string;
   revision_id: string;
@@ -196,8 +205,11 @@ export interface RecruitmentApi {
   getTask(taskId: string): Promise<TaskStatus>;
   listTasks(): Promise<TaskStatus[]>;
   controlTask(taskId: string, action: TaskAction): Promise<TaskStatus>;
+  listResumeRevisions(candidateId: string): Promise<ResumeRevision[]>;
+  switchResumeRevision(revisionId: string): Promise<ResumeRevision>;
   searchCandidates(query: string): Promise<CandidateSearchResult>;
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
+  importJdFile(file: File, company: string, title: string): Promise<ImportedJd>;
   matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
   health(): Promise<Record<string, { status: string; message?: string }>>;
   diagnostics(): Promise<DiagnosticsData>;
@@ -321,6 +333,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [reverseMatches, setReverseMatches] = useState<ReverseMatchItem[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [selectedContact, setSelectedContact] = useState<CandidateContact | null>(null);
+  const [resumeRevisions, setResumeRevisions] = useState<ResumeRevision[]>([]);
   const [contactEmail, setContactEmail] = useState("");
   const [contactPhone, setContactPhone] = useState("");
 
@@ -456,6 +469,16 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function uploadJd(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    try {
+      setJdResult(await api.importJdFile(file, jdCompany.trim(), jdTitle.trim()));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "JD 文件导入失败");
+    }
+  }
+
   async function runMatch(event: FormEvent) {
     event.preventDefault();
     if (!matchRevision.trim()) return;
@@ -571,6 +594,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     setActiveCaseId(null);
     setCaseEvents([]);
     setSelectedContact(null);
+    setResumeRevisions([]);
     setError(null);
     try {
       setSelectedCases(await api.listCases(item.candidate_id));
@@ -579,8 +603,22 @@ export function App({ api }: { api: RecruitmentApi }) {
       setSelectedContact(contact);
       setContactEmail(contact.email ?? "");
       setContactPhone(contact.phone ?? "");
+      setResumeRevisions(await api.listResumeRevisions(item.candidate_id));
     } catch {
       // 详情抽屉仍可打开，即使流程数据加载失败。
+    }
+  }
+
+  async function switchResumeRevision(revisionId: string) {
+    setError(null);
+    try {
+      const current = await api.switchResumeRevision(revisionId);
+      setResumeRevisions((revisions) => revisions.map((revision) => ({
+        ...revision,
+        is_current: revision.revision_id === current.revision_id
+      })));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "简历版本切换失败");
     }
   }
 
@@ -955,7 +993,18 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <input value={jdTitle} onChange={(e) => setJdTitle(e.target.value)} placeholder="岗位名称" aria-label="JD 岗位" />
               </div>
               <textarea value={jdSource} onChange={(e) => setJdSource(e.target.value)} placeholder="粘贴 JD 原文…" aria-label="JD 原文" />
-              <button type="submit">导入并解析</button>
+              <div className="case-actions">
+                <button type="submit">导入并解析</button>
+                <label className="import-button">
+                  导入 Word / Excel
+                  <input
+                    aria-label="选择 JD 文件"
+                    accept=".doc,.docx,.xls,.xlsx"
+                    type="file"
+                    onChange={(event) => void uploadJd(event.target.files?.[0])}
+                  />
+                </label>
+              </div>
             </form>
             {jdResult && (
               <div className="jd-result" role="status">
@@ -1340,6 +1389,25 @@ export function App({ api }: { api: RecruitmentApi }) {
               </label>
               <button className="detail-button" onClick={() => void saveContact()}>保存联系方式</button>
             </div>
+          </section>
+
+          <section className="case-section" aria-label="简历版本">
+            <h3>简历版本</h3>
+            {resumeRevisions.length === 0 ? (
+              <p className="muted">暂无版本记录</p>
+            ) : resumeRevisions.map((revision) => (
+              <div className="case-row" key={revision.revision_id}>
+                <div>
+                  <strong>{revision.original_filename}</strong>
+                  <small>{revision.display_name ?? "未命名"} · {revision.status}</small>
+                </div>
+                {revision.is_current ? (
+                  <span className="ok">当前版本</span>
+                ) : (
+                  <button className="detail-button" onClick={() => void switchResumeRevision(revision.revision_id)}>设为当前版本</button>
+                )}
+              </div>
+            ))}
           </section>
 
           {reverseMatches.length > 0 && (

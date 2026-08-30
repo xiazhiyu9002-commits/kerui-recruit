@@ -20,6 +20,7 @@ import type {
   RecruitmentApi,
   ReminderItem,
   ReverseMatchItem,
+  ResumeRevision,
   StageEventItem,
   TaskAction,
   TaskStatus
@@ -92,6 +93,19 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
+  listResumeRevisions(candidateId: string): Promise<ResumeRevision[]> {
+    return this.request<ResumeRevision[]>(
+      `/api/resumes/candidate/${encodeURIComponent(candidateId)}/revisions`
+    );
+  }
+
+  switchResumeRevision(revisionId: string): Promise<ResumeRevision> {
+    return this.request<ResumeRevision>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/switch`,
+      { method: "POST" }
+    );
+  }
+
   searchCandidates(query: string): Promise<CandidateSearchResult> {
     return this.request<CandidateSearchResult>("/api/search/candidates", {
       body: JSON.stringify({ query, limit: 50 }),
@@ -108,6 +122,17 @@ export class ApiClient implements RecruitmentApi {
         source_text: input.sourceText
       }),
       headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  importJdFile(file: File, company: string, title: string) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("company", company);
+    form.append("title", title);
+    return this.request<{ jd_id: string; revision_id: string }>("/api/jd/import-file", {
+      body: form,
       method: "POST"
     });
   }

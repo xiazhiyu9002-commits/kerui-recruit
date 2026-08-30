@@ -30,6 +30,15 @@ function fakeApi(): RecruitmentApi {
       progress: 20,
       error_message: null
     }),
+    listResumeRevisions: async () => [],
+    switchResumeRevision: async (revisionId) => ({
+      revision_id: revisionId,
+      display_name: "候选人",
+      original_filename: "resume.pdf",
+      status: "READY",
+      is_current: true,
+      created_at: "2026-08-30T00:00:00Z"
+    }),
     searchCandidates: async () => ({
       items: [
         {
@@ -46,6 +55,7 @@ function fakeApi(): RecruitmentApi {
       degraded_reasons: []
     }),
     importJd: async () => ({ jd_id: "jd-1", revision_id: "rev-1" }),
+    importJdFile: async () => ({ jd_id: "jd-file-1", revision_id: "rev-file-1" }),
     matchJd: async () => ({
       run_id: "run-1",
       items: [
@@ -175,6 +185,41 @@ describe("desktop recruitment workflow", () => {
     await user.click(screen.getByRole("button", { name: "导入并解析" }));
 
     expect(await screen.findByText("rev-1")).toBeVisible();
+  });
+
+  test("imports a Word JD file", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.click(screen.getByText("JD 管理"));
+    await user.upload(
+      screen.getByLabelText("选择 JD 文件"),
+      new File(["jd"], "后端工程师.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })
+    );
+
+    expect(await screen.findByText("rev-file-1")).toBeVisible();
+  });
+
+  test("shows resume revisions and switches the current revision", async () => {
+    const user = userEvent.setup();
+    const api = fakeApi();
+    api.listResumeRevisions = async () => [{
+      revision_id: "revision-old",
+      display_name: "张三旧版",
+      original_filename: "old.pdf",
+      status: "READY",
+      is_current: false,
+      created_at: "2026-08-29T00:00:00Z"
+    }];
+    render(<App api={api} />);
+
+    await user.type(screen.getByPlaceholderText("搜索人才、技能、公司或自然语言"), "Python");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+    expect(await screen.findByText("old.pdf")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "设为当前版本" }));
+
+    expect(await screen.findByText("当前版本")).toBeVisible();
   });
 
   test("runs JD match and shows candidates", async () => {
