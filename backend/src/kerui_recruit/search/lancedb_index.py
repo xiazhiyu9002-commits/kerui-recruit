@@ -19,12 +19,15 @@ from kerui_recruit.search.contracts import (
 class LanceDBSearchIndex:
     table_name = "candidate_chunks"
     rrf_k = 60
+    optimize_every = 20
 
     def __init__(self, root: Path, *, vector_dimension: int) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self.vector_dimension = vector_dimension
         self.database = lancedb.connect(str(root))
+        self._pending_modifications = 0
+        self._dirty_marker = root / ".fts-dirty"
 
     def upsert(self, chunks: list[SearchChunk]) -> None:
         if not chunks:
@@ -36,11 +39,21 @@ class LanceDBSearchIndex:
                 data=records,
                 schema=self._schema(),
             )
+            self._create_fts_index(table)
         else:
             table = self.database.open_table(self.table_name)
             chunk_ids = ", ".join(self._quote(chunk.id) for chunk in chunks)
             table.delete(f"id IN ({chunk_ids})")
             table.add(records)
+            self._dirty_marker.touch(exist_ok=True)
+            self._pending_modifications += 1
+            if self._pending_modifications >= self.optimize_every:
+                table.optimize()
+                self._dirty_marker.unlink(missing_ok=True)
+                self._pending_modifications = 0
+
+    @staticmethod
+    def _create_fts_index(table: Any) -> None:
         table.create_index(
             "content",
             config=FTS(
@@ -65,7 +78,12 @@ class LanceDBSearchIndex:
         """Open the index table and return its row count to preload it."""
         if not self._table_exists():
             return 0
-        return self.database.open_table(self.table_name).count_rows()
+        table = self.database.open_table(self.table_name)
+        if self._dirty_marker.exists():
+            table.optimize()
+            self._dirty_marker.unlink(missing_ok=True)
+            self._pending_modifications = 0
+        return table.count_rows()
 
     def search(self, request: SearchRequest) -> list[SearchHit]:
         if not self._table_exists():
