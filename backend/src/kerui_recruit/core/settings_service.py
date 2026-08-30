@@ -78,6 +78,13 @@ class SettingsService:
             if value is None or value == "":
                 data.pop(key, None)
             elif key in _SENSITIVE_FIELDS:
+                existing = data.get(key)
+                if existing:
+                    try:
+                        if value == _mask(self.encryption.decrypt(existing)):
+                            continue
+                    except Exception:
+                        pass
                 data[key] = self.encryption.encrypt(value)
             else:
                 data[key] = value

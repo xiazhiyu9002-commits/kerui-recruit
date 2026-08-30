@@ -110,4 +110,21 @@ describe("ApiClient", () => {
     expect(received?.url).toBe("http://127.0.0.1:43127/api/bd/search");
     expect(await received?.json()).toEqual({ query: "Java 工程师", limit: 20 });
   });
+
+  test("provider connectivity uses the onboarding probe endpoint", async () => {
+    let received: Request | undefined;
+    const fetcher: typeof fetch = async (input, init) => {
+      received = new Request(input, init);
+      return new Response(JSON.stringify([{ name: "llm", ok: true, message: "可用" }]), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.testProviders();
+
+    expect(received?.url).toBe("http://127.0.0.1:43127/api/onboarding/test-providers");
+    expect(received?.method).toBe("POST");
+  });
 });

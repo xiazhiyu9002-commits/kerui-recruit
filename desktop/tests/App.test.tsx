@@ -102,6 +102,7 @@ function fakeApi(): RecruitmentApi {
     migrateData: async () => ({ target_root: "/tmp/new", files_copied: 3, files_verified: 3, candidate_count: 1, ok: true }),
     setDataRoot: async (path: string) => path,
     onboardingStatus: async () => ({ data_root: "/tmp/data", llm_enabled: false, search_enabled: false, bd_search_enabled: false, mail_enabled: false, smtp_enabled: false, health: { database: { status: "healthy" } } })
+    ,testProviders: async () => [{ name: "llm", ok: true, message: "可用" }]
   };
 }
 
@@ -217,5 +218,18 @@ describe("desktop recruitment workflow", () => {
     await user.click(screen.getByRole("button", { name: "保存联系方式" }));
 
     expect(email).toHaveValue("new@example.com");
+  });
+
+  test("tests configured providers and explains when saved settings apply", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.click(screen.getByText("设置"));
+    await user.click(screen.getByRole("button", { name: "测试 API" }));
+    expect(await screen.findByText("大模型：可用")).toBeVisible();
+
+    await user.type(screen.getByLabelText("DeepSeek 模型"), "deepseek-v4-flash");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(await screen.findByText("设置已保存，重启应用后生效")).toBeVisible();
   });
 });

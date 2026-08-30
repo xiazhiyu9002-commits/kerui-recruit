@@ -37,3 +37,18 @@ def test_secrets_are_encrypted_at_rest(tmp_path: Path) -> None:
     assert raw["tavily_api_key"] != "tvly-secret-key"
     # 解密后应能还原。
     assert encryption.decrypt(raw["tavily_api_key"]) == "tvly-secret-key"
+
+
+def test_submitting_an_unchanged_mask_does_not_replace_the_secret(tmp_path: Path) -> None:
+    """Saving another setting must not turn the displayed mask into the API key."""
+    store = SettingsStore(tmp_path / "settings.json")
+    encryption = EncryptionService(key_path=str(tmp_path / "encryption.key"))
+    service = SettingsService(store=store, encryption=encryption)
+    service.update({"deepseek_api_key": "sk-original-secret", "deepseek_model": "old"})
+    masked_key = service.get_masked()["deepseek_api_key"]
+
+    service.update({"deepseek_api_key": masked_key, "deepseek_model": "new"})
+
+    raw = store.load()
+    assert encryption.decrypt(raw["deepseek_api_key"]) == "sk-original-secret"
+    assert raw["deepseek_model"] == "new"

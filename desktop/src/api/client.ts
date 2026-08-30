@@ -16,6 +16,7 @@ import type {
   MappingTreeNode,
   MigrationReport,
   OnboardingStatus,
+  ProviderCheck,
   RecruitmentApi,
   ReminderItem,
   ReverseMatchItem,
@@ -67,6 +68,12 @@ export class ApiClient implements RecruitmentApi {
 
   onboardingStatus() {
     return this.request<OnboardingStatus>("/api/onboarding/status");
+  }
+
+  testProviders() {
+    return this.request<ProviderCheck[]>("/api/onboarding/test-providers", {
+      method: "POST"
+    });
   }
 
   getTask(taskId: string): Promise<TaskStatus> {

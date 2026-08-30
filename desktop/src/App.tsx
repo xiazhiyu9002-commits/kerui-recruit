@@ -182,6 +182,12 @@ export interface OnboardingStatus {
   health: Record<string, { status: string; message?: string }>;
 }
 
+export interface ProviderCheck {
+  name: string;
+  ok: boolean;
+  message: string;
+}
+
 export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   importFolder(directory: string): Promise<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>;
@@ -225,6 +231,7 @@ export interface RecruitmentApi {
   migrateData(targetRoot: string): Promise<MigrationReport>;
   setDataRoot(path: string): Promise<string>;
   onboardingStatus(): Promise<OnboardingStatus>;
+  testProviders(): Promise<ProviderCheck[]>;
 }
 
 
@@ -241,6 +248,13 @@ const HEALTH_LABELS: Record<string, string> = {
   blob_store: "原件库",
   search: "检索引擎",
   disk: "磁盘空间"
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  llm: "大模型",
+  embedding: "向量模型",
+  reranker: "重排模型",
+  web_search: "网页搜索"
 };
 
 
@@ -309,6 +323,8 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   // 设置
   const [settings, setSettings] = useState<AppSettings>({});
+  const [providerChecks, setProviderChecks] = useState<ProviderCheck[]>([]);
+  const [settingsMessage, setSettingsMessage] = useState("");
   const [dataRootInput, setDataRootInput] = useState("");
   const [dataRootMessage, setDataRootMessage] = useState("");
 
@@ -633,11 +649,21 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function testProviders() {
+    setError(null);
+    try {
+      setProviderChecks(await api.testProviders());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "API 测试失败");
+    }
+  }
+
   async function saveSettings(event: FormEvent) {
     event.preventDefault();
     setError(null);
     try {
       setSettings(await api.updateSettings(settings));
+      setSettingsMessage("设置已保存，重启应用后生效");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "设置保存失败");
     }
@@ -1083,7 +1109,8 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <h2>模型 API 配置</h2>
                 <div className="case-actions">
                   <button type="button" className="import-button" onClick={() => void loadSettings()}>加载</button>
-                  <button type="submit">保存并应用</button>
+                  <button type="button" className="import-button" onClick={() => void testProviders()}>测试 API</button>
+                  <button type="submit">保存设置</button>
                 </div>
               </div>
 
@@ -1106,6 +1133,16 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="jd-row">
                 <input value={settings.imap_whitelist ?? ""} onChange={(e) => setSettings({ ...settings, imap_whitelist: e.target.value })} placeholder="发件人白名单（逗号分隔）" aria-label="发件人白名单" />
               </div>
+              {settingsMessage && <p className="muted">{settingsMessage}</p>}
+              {providerChecks.length > 0 && (
+                <div className="health-grid">
+                  {providerChecks.map((check) => (
+                    <div className="health-card" key={check.name}>
+                      <strong>{PROVIDER_LABELS[check.name] ?? check.name}：{check.message}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
             </form>
 
             <div className="section-heading" style={{ marginTop: 20 }}><h2>数据目录</h2></div>
