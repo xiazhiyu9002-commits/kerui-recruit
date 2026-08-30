@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.migrate import SCHEMA_VERSION, migrate
 from kerui_recruit.db.models import (
     Blob,
     Candidate,
@@ -129,7 +129,7 @@ def test_migrate_records_schema_version(tmp_path: Path) -> None:
     with Session(engine) as session:
         version = session.scalar(select(SchemaVersion))
         assert version is not None
-        assert version.version == 1
+        assert version.version == SCHEMA_VERSION
 
 
 def test_migrate_rejects_newer_schema_version(tmp_path: Path) -> None:
