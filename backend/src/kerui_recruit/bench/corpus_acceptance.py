@@ -52,6 +52,56 @@ class CorpusInventory:
         }
 
 
+@dataclass(slots=True)
+class AcceptanceCheckpoint:
+    path: Path
+    corpus_sha256: str
+    processed_sha256: set[str]
+    outcomes: dict[str, int]
+    latency_ms_total: int
+
+    @classmethod
+    def open(cls, path: Path, corpus_sha256: str) -> AcceptanceCheckpoint:
+        if not path.exists():
+            return cls(path, corpus_sha256, set(), {}, 0)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("corpus_sha256") != corpus_sha256:
+            raise ValueError("checkpoint belongs to a different corpus")
+        return cls(
+            path=path,
+            corpus_sha256=corpus_sha256,
+            processed_sha256=set(data.get("processed_sha256", [])),
+            outcomes={str(key): int(value) for key, value in data.get("outcomes", {}).items()},
+            latency_ms_total=int(data.get("latency_ms_total", 0)),
+        )
+
+    def contains(self, content_sha256: str) -> bool:
+        return content_sha256 in self.processed_sha256
+
+    def record(self, content_sha256: str, *, outcome: str, latency_ms: int) -> None:
+        if self.contains(content_sha256):
+            return
+        self.processed_sha256.add(content_sha256)
+        self.outcomes[outcome] = self.outcomes.get(outcome, 0) + 1
+        self.latency_ms_total += max(0, latency_ms)
+        self._save()
+
+    def _save(self) -> None:
+        payload = {
+            "corpus_sha256": self.corpus_sha256,
+            "processed_sha256": sorted(self.processed_sha256),
+            "outcomes": dict(sorted(self.outcomes.items())),
+            "latency_ms_total": self.latency_ms_total,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)
+
+
 def scan_corpus(root: Path) -> CorpusInventory:
     """Read a corpus without mutating it and return privacy-safe aggregates."""
     resolved = root.expanduser().resolve()

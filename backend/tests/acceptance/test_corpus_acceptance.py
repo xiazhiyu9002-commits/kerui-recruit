@@ -6,7 +6,7 @@ from pathlib import Path
 import pymupdf
 from docx import Document
 
-from kerui_recruit.bench.corpus_acceptance import scan_corpus
+from kerui_recruit.bench.corpus_acceptance import AcceptanceCheckpoint, scan_corpus
 
 
 def _write_pdf(path: Path, text: str | None) -> None:
@@ -63,3 +63,34 @@ def test_scan_corpus_is_deterministic_and_does_not_modify_sources(tmp_path: Path
 
     assert first == second
     assert (source / "resume.docx").read_bytes() == before
+
+
+def test_acceptance_checkpoint_resumes_without_storing_paths_or_text(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint = AcceptanceCheckpoint.open(checkpoint_path, "a" * 64)
+
+    checkpoint.record("b" * 64, outcome="SUCCESS", latency_ms=125)
+    resumed = AcceptanceCheckpoint.open(checkpoint_path, "a" * 64)
+    serialized = checkpoint_path.read_text(encoding="utf-8")
+
+    assert resumed.contains("b" * 64)
+    assert resumed.outcomes == {"SUCCESS": 1}
+    assert resumed.latency_ms_total == 125
+    assert "resume.pdf" not in serialized
+    assert "candidate text" not in serialized
+
+
+def test_acceptance_checkpoint_rejects_a_different_corpus(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    AcceptanceCheckpoint.open(checkpoint_path, "a" * 64).record(
+        "b" * 64,
+        outcome="SUCCESS",
+        latency_ms=10,
+    )
+
+    try:
+        AcceptanceCheckpoint.open(checkpoint_path, "c" * 64)
+    except ValueError as error:
+        assert "different corpus" in str(error)
+    else:
+        raise AssertionError("expected a corpus identity mismatch")
