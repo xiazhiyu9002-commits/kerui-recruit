@@ -147,6 +147,18 @@ fn persist_data_root(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(data_root_config_path(), path.to_string_lossy().as_bytes())
 }
 
+fn sidecar_candidates(
+    executable_directory: &std::path::Path,
+    resource_directory: &std::path::Path,
+    name: &str,
+) -> Vec<PathBuf> {
+    vec![
+        executable_directory.join(name),
+        resource_directory.join(name),
+        resource_directory.join("binaries").join(name),
+    ]
+}
+
 fn resolve_sidecar_binary(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(path) = std::env::var("KERUI_SIDECAR_BIN") {
         return PathBuf::from(path);
@@ -156,25 +168,22 @@ fn resolve_sidecar_binary(app: &tauri::AppHandle) -> PathBuf {
     } else {
         "kerui-recruit-sidecar"
     };
-    // 1) Next to the current executable (dev / manual smoke placement).
-    if let Some(candidate) = std::env::current_exe()
+    let executable_directory = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let resource_directory = app.path().resource_dir().ok();
+
+    if let (Some(executable_directory), Some(resource_directory)) =
+        (&executable_directory, &resource_directory)
     {
-        if candidate.exists() {
-            return candidate;
+        for candidate in sidecar_candidates(executable_directory, resource_directory, name) {
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
-    // 2) Bundled resource directory (production install).
-    if let Ok(candidate) = app.path().resource_dir().map(|dir| dir.join(name)) {
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    // 3) Fallback next to the executable.
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+    executable_directory
+        .map(|directory| directory.join(name))
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
@@ -325,7 +334,7 @@ fn parse_port(api_base_url: &str) -> io::Result<u16> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{sidecar_arguments, validate_data_root, RuntimeConfig};
+    use super::{sidecar_arguments, sidecar_candidates, validate_data_root, RuntimeConfig};
 
     #[test]
     fn runtime_config_uses_loopback_and_a_256_bit_launch_token() {
@@ -349,6 +358,24 @@ mod tests {
             "--token", &"a".repeat(64),
             "--data-root", "C:/Users/example/AppData/Local/KeRuiRecruit",
         ]);
+    }
+
+    #[test]
+    fn sidecar_candidates_include_tauri_bundled_resource_directory() {
+        let candidates = sidecar_candidates(
+            std::path::Path::new("C:/Program Files/KeRui"),
+            std::path::Path::new("C:/Program Files/KeRui/resources"),
+            "kerui-recruit-sidecar.exe",
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("C:/Program Files/KeRui/kerui-recruit-sidecar.exe"),
+                PathBuf::from("C:/Program Files/KeRui/resources/kerui-recruit-sidecar.exe"),
+                PathBuf::from("C:/Program Files/KeRui/resources/binaries/kerui-recruit-sidecar.exe"),
+            ]
+        );
     }
 
     #[test]

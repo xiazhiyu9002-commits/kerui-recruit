@@ -1,6 +1,10 @@
 import { defineConfig } from "@playwright/test";
 
 const SESSION_TOKEN = "0".repeat(64);
+const DEFAULT_PYTHON = process.platform === "win32"
+  ? "..\\.venv\\Scripts\\python.exe"
+  : "../.venv/bin/python";
+const PYTHON = process.env.KERUI_E2E_PYTHON ?? DEFAULT_PYTHON;
 
 export default defineConfig({
   testDir: "./tests",
@@ -13,7 +17,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `rmdir /s /q .e2e-data 2>nul & ..\\.venv\\Scripts\\python.exe -m kerui_recruit.sidecar --port 43127 --token ${SESSION_TOKEN} --data-root .e2e-data`,
+      command: `"${PYTHON}" -m kerui_recruit.bench.e2e_sidecar --port 43127 --token ${SESSION_TOKEN} --data-root .e2e-data`,
       cwd: "../backend",
       url: "http://127.0.0.1:43127/health/ready",
       reuseExistingServer: false,

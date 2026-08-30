@@ -28,4 +28,8 @@ if (-not (Test-Path $Exe)) {
     throw "打包产物缺失：$Exe"
 }
 
+$BundleDirectory = Join-Path $Root "desktop\src-tauri\binaries"
+New-Item -ItemType Directory -Path $BundleDirectory -Force | Out-Null
+Copy-Item -LiteralPath $Exe -Destination (Join-Path $BundleDirectory "kerui-recruit-sidecar.exe") -Force
+
 Write-Host "sidecar 打包完成：$Exe"
