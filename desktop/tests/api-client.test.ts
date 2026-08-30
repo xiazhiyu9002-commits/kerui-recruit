@@ -127,4 +127,24 @@ describe("ApiClient", () => {
     expect(received?.url).toBe("http://127.0.0.1:43127/api/onboarding/test-providers");
     expect(received?.method).toBe("POST");
   });
+
+  test("lists tasks and posts task control actions", async () => {
+    const received: Request[] = [];
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.listTasks();
+    await client.controlTask("task/1", "pause");
+
+    expect(received[0].url).toBe("http://127.0.0.1:43127/api/tasks");
+    expect(received[0].method).toBe("GET");
+    expect(received[1].url).toBe("http://127.0.0.1:43127/api/tasks/task%2F1/pause");
+    expect(received[1].method).toBe("POST");
+  });
 });

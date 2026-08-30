@@ -22,6 +22,14 @@ function fakeApi(): RecruitmentApi {
       progress: 100,
       error_message: null
     }),
+    listTasks: async () => [],
+    controlTask: async (_taskId, action) => ({
+      id: "task-1",
+      task_type: "PARSE_RESUME",
+      status: action === "pause" ? "PAUSED" : "QUEUED",
+      progress: 20,
+      error_message: null
+    }),
     searchCandidates: async () => ({
       items: [
         {
@@ -101,8 +109,8 @@ function fakeApi(): RecruitmentApi {
     dismissReminder: async () => ({ id: "reminder-1", title: "跟进", note: null, remind_at: "2026-08-29T09:00:00", dismissed: true, dismissed_at: "2026-08-29T10:00:00" }),
     migrateData: async () => ({ target_root: "/tmp/new", files_copied: 3, files_verified: 3, candidate_count: 1, ok: true }),
     setDataRoot: async (path: string) => path,
-    onboardingStatus: async () => ({ data_root: "/tmp/data", llm_enabled: false, search_enabled: false, bd_search_enabled: false, mail_enabled: false, smtp_enabled: false, health: { database: { status: "healthy" } } })
-    ,testProviders: async () => [{ name: "llm", ok: true, message: "可用" }]
+    onboardingStatus: async () => ({ data_root: "/tmp/data", llm_enabled: false, search_enabled: false, bd_search_enabled: false, mail_enabled: false, smtp_enabled: false, health: { database: { status: "healthy" } } }),
+    testProviders: async () => [{ name: "llm", ok: true, message: "可用" }]
   };
 }
 
@@ -129,6 +137,32 @@ describe("desktop recruitment workflow", () => {
 
     expect(await screen.findByText("解析完成")).toBeVisible();
     expect(screen.getByText("task-1")).toBeVisible();
+  });
+
+  test("loads durable tasks and exposes valid task controls", async () => {
+    const user = userEvent.setup();
+    const api = fakeApi();
+    api.listTasks = async () => [{
+      id: "task-paused",
+      task_type: "PARSE_RESUME",
+      status: "PAUSED",
+      progress: 20,
+      error_message: null
+    }];
+    api.controlTask = async (taskId, action) => ({
+      id: taskId,
+      task_type: "PARSE_RESUME",
+      status: action === "resume" ? "QUEUED" : "PAUSED",
+      progress: 20,
+      error_message: null
+    });
+    render(<App api={api} />);
+
+    await user.click(screen.getByRole("button", { name: "刷新任务" }));
+    expect(await screen.findByText("task-paused")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "继续" }));
+
+    expect(await screen.findByText("解析中 20%")).toBeVisible();
   });
 
   test("imports a JD and shows its revision id", async () => {

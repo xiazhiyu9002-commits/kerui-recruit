@@ -19,6 +19,8 @@ export interface TaskStatus {
   error_message: string | null;
 }
 
+export type TaskAction = "cancel" | "retry" | "pause" | "resume";
+
 export interface CandidateSearchItem {
   candidate_id: string;
   revision_id: string;
@@ -192,6 +194,8 @@ export interface RecruitmentApi {
   importResume(file: File): Promise<ImportedResume>;
   importFolder(directory: string): Promise<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>;
   getTask(taskId: string): Promise<TaskStatus>;
+  listTasks(): Promise<TaskStatus[]>;
+  controlTask(taskId: string, action: TaskAction): Promise<TaskStatus>;
   searchCandidates(query: string): Promise<CandidateSearchResult>;
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
   matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
@@ -261,6 +265,8 @@ const PROVIDER_LABELS: Record<string, string> = {
 function taskLabel(task: TaskStatus): string {
   if (task.status === "SUCCESS") return "解析完成";
   if (task.status === "FAILED" || task.status === "DEAD_LETTER") return "解析失败";
+  if (task.status === "PAUSED") return "已暂停";
+  if (task.status === "CANCELLED") return "已取消";
   return `解析中 ${task.progress}%`;
 }
 
@@ -376,6 +382,26 @@ export function App({ api }: { api: RecruitmentApi }) {
       }
     }
     void run();
+  }
+
+  async function loadTasks() {
+    setError(null);
+    try {
+      setTasks(await api.listTasks());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "任务列表加载失败");
+    }
+  }
+
+  async function controlTask(task: TaskStatus, action: TaskAction) {
+    setError(null);
+    try {
+      const updated = await api.controlTask(task.id, action);
+      setTasks((current) => [updated, ...current.filter((entry) => entry.id !== updated.id)]);
+      if (action === "resume" || action === "retry") pollTask(updated.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "任务操作失败");
+    }
   }
 
   async function uploadResume(file: File | undefined, files?: FileList | null) {
@@ -892,11 +918,28 @@ export function App({ api }: { api: RecruitmentApi }) {
               </div>
 
               <aside className="task-center" aria-label="任务中心">
-                <div className="section-heading"><h2>任务中心</h2><span>{tasks.length}</span></div>
+                <div className="section-heading">
+                  <h2>任务中心</h2>
+                  <button className="detail-button" onClick={() => void loadTasks()}>刷新任务</button>
+                </div>
                 {tasks.length === 0 ? <p className="muted">暂无后台任务</p> : tasks.map((task) => (
                   <article key={task.id}>
                     <strong>{taskLabel(task)}</strong><code>{task.id}</code>
                     <progress max="100" value={task.progress} />
+                    <div className="case-actions">
+                      {(["PENDING", "QUEUED", "RETRY_WAIT"] as const).includes(task.status as "PENDING" | "QUEUED" | "RETRY_WAIT") && (
+                        <button className="detail-button" onClick={() => void controlTask(task, "pause")}>暂停</button>
+                      )}
+                      {task.status === "PAUSED" && (
+                        <button className="detail-button" onClick={() => void controlTask(task, "resume")}>继续</button>
+                      )}
+                      {(task.status === "FAILED" || task.status === "DEAD_LETTER") && (
+                        <button className="detail-button" onClick={() => void controlTask(task, "retry")}>重试</button>
+                      )}
+                      {!["SUCCESS", "CANCELLED", "DEAD_LETTER"].includes(task.status) && (
+                        <button className="detail-button" onClick={() => void controlTask(task, "cancel")}>取消</button>
+                      )}
+                    </div>
                   </article>
                 ))}
               </aside>

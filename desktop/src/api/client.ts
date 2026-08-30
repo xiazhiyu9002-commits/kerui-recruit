@@ -21,6 +21,7 @@ import type {
   ReminderItem,
   ReverseMatchItem,
   StageEventItem,
+  TaskAction,
   TaskStatus
 } from "../App";
 
@@ -78,6 +79,17 @@ export class ApiClient implements RecruitmentApi {
 
   getTask(taskId: string): Promise<TaskStatus> {
     return this.request<TaskStatus>(`/api/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  listTasks(): Promise<TaskStatus[]> {
+    return this.request<TaskStatus[]>("/api/tasks");
+  }
+
+  controlTask(taskId: string, action: TaskAction): Promise<TaskStatus> {
+    return this.request<TaskStatus>(
+      `/api/tasks/${encodeURIComponent(taskId)}/${action}`,
+      { method: "POST" }
+    );
   }
 
   searchCandidates(query: string): Promise<CandidateSearchResult> {
