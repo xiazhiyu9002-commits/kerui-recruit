@@ -7,11 +7,17 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.backup.portable import PortableBackupService
-from kerui_recruit.backup.service import BackupService
+from kerui_recruit.backup.service import BackupService, apply_pending_restore, finalize_pending_restore
+from kerui_recruit.bd_agent.agent import BdAgent
+from kerui_recruit.bd_agent.evidence import EvidenceExtractor
+from kerui_recruit.bd_agent.fetcher import JinaReaderFetcher
+from kerui_recruit.bd_agent.planner import QueryPlanner
+from kerui_recruit.bd_agent.synthesis import SynthesisGenerator
 from kerui_recruit.bd_search.service import BdSearchService
 from kerui_recruit.cases.service import CaseService
 from kerui_recruit.core.settings import Settings
@@ -33,9 +39,11 @@ from kerui_recruit.mail.service import MailService
 from kerui_recruit.mapping.service import MappingService
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.migration.service import MigrationService
+from kerui_recruit.org.service import OrgService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.providers.connectivity import ProviderConnectivityService
 from kerui_recruit.providers.leads import DeepSeekLeadExtractor
+from kerui_recruit.providers.openai_compatible import OpenAICompatibleClient
 from kerui_recruit.providers.websearch import (
     NullWebSearchProvider,
     SerpApiWebSearchProvider,
@@ -49,7 +57,7 @@ from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
 from kerui_recruit.search.service import HybridSearchService
 from kerui_recruit.soft_delete.service import SoftDeleteService
 from kerui_recruit.storage.blobs import BlobStore
-from kerui_recruit.tasks.repository import TaskRepository
+from kerui_recruit.tasks.repository import TaskRepository, TaskSpec
 from kerui_recruit.tasks.worker import TaskWorker
 
 
@@ -63,16 +71,47 @@ class RuntimeComponents:
 
 def build_runtime(settings: Settings) -> RuntimeComponents:
     settings.paths.ensure()
+    restore_report = apply_pending_restore(
+        database_path=settings.paths.database,
+        search_dir=settings.paths.search,
+        backup_dir=settings.paths.backups,
+    )
     engine = create_engine_for(settings.paths.database)
     migrate(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
+    if restore_report is not None:
+        from kerui_recruit.db.models import Candidate, Jd, TaskRecord
+        from kerui_recruit.search.sync import enqueue_sync
+        with factory() as restore_session, restore_session.begin():
+            # The restored outbox described the older index.  Increment every
+            # entity generation so the new empty projection is republished.
+            for candidate_id in restore_session.scalars(select(Candidate.id)):
+                enqueue_sync(restore_session, "candidate", candidate_id)
+            for jd_id in restore_session.scalars(select(Jd.id)):
+                enqueue_sync(restore_session, "jd", jd_id)
+            for task in restore_session.scalars(select(TaskRecord).where(TaskRecord.status == "RUNNING")):
+                task.status = "QUEUED"
+                task.lease_owner = None
+                task.lease_expires_at = None
+        finalize_pending_restore(restore_report)
+    from kerui_recruit.cases.state import reconcile_legacy_workflow_state
+    reconcile_legacy_workflow_state(factory)
     blob_store = BlobStore(settings.paths.blobs, settings.paths.temp)
 
     providers = build_providers(settings)
+    from kerui_recruit.match.jd_index import JdSearchIndex
+    from kerui_recruit.search.sync import IndexSyncService
+    embedding_model = settings.siliconflow_embedding_model if settings.search_providers_enabled else "local-hash-v1"
     index = LanceDBSearchIndex(
         settings.paths.search,
         vector_dimension=providers.vector_dimension,
+        embedding_model=embedding_model,
+        chunk_version="2",
     )
+    jd_index = JdSearchIndex(settings.paths.search / "jobs", vector_dimension=providers.vector_dimension,
+        embedding_model=embedding_model, chunk_version="2")
+    index_sync_service = IndexSyncService(session_factory=factory, index=index,
+        embedding_provider=providers.embedding, jd_index=jd_index)
     repository = TaskRepository(factory)
     search_service = HybridSearchService(
         index=index,
@@ -81,9 +120,8 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     )
     match_service = MatchService(
         session_factory=factory,
-        index=index,
-        embedding_provider=providers.embedding,
-        reranker_provider=providers.reranker,
+        search_service=search_service,
+        jd_index=jd_index,
     )
     jd_pipeline = JdPipeline(session_factory=factory, parser=providers.jd_parser)
 
@@ -105,6 +143,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     )
     mapping_service = MappingService(session_factory=factory)
     reminder_service = ReminderService(session_factory=factory)
+    org_service = OrgService(session_factory=factory)
     encryption_service = EncryptionService(
         key_path=str(settings.paths.config / "encryption.key"),
     )
@@ -134,6 +173,24 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         search_provider=web_search_provider,
         encryption=encryption_service,
         extractor=lead_extractor,
+    )
+    llm_client = None
+    if settings.llm_enabled and providers.http_client is not None:
+        llm_client = OpenAICompatibleClient(
+            base_url=settings.deepseek_base_url,
+            api_key=settings.deepseek_api_key.get_secret_value(),
+            model=settings.deepseek_model,
+            http_client=providers.http_client,
+        )
+    bd_agent = BdAgent(
+        session_factory=factory,
+        search_provider=web_search_provider,
+        fetcher=JinaReaderFetcher(client=providers.http_client),
+        encryption=encryption_service,
+        planner=QueryPlanner(llm_client) if llm_client else None,
+        evidence_extractor=EvidenceExtractor(reranker=providers.reranker),
+        synthesizer=SynthesisGenerator(llm_client) if llm_client else None,
+        fallback=bd_search_service,
     )
     case_service = CaseService(session_factory=factory)
     dashboard_service = DashboardService(session_factory=factory)
@@ -175,6 +232,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         reminder_mail_service=reminder_mail_service,
         backup_service=backup_service,
         soft_delete_service=soft_delete_service,
+        sender_domains=settings.imap_whitelist_domains,
     )
 
     settings_service = SettingsService(
@@ -202,7 +260,9 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         diagnostics_service=diagnostics_service,
         mapping_service=mapping_service,
         reminder_service=reminder_service,
+        org_service=org_service,
         bd_search_service=bd_search_service,
+        bd_agent=bd_agent,
         encryption_service=encryption_service,
         case_service=case_service,
         dashboard_service=dashboard_service,
@@ -214,6 +274,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
             providers=providers,
             web_search=web_search_provider,
         ),
+        index_sync_service=index_sync_service,
     )
     pipeline = ResumePipeline(
         session_factory=factory,
@@ -221,19 +282,47 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         parser=providers.parser,
         embedding_provider=providers.embedding,
         ocr_provider=providers.ocr,
-        search_index=index,
+        search_index=None,
+        defer_indexing=True,
         encryption_service=encryption_service,
     )
 
     async def parse_resume(payload: dict[str, Any]) -> str:
-        result = await pipeline.run(str(payload["revision_id"]))
+        result = await pipeline.run(
+            str(payload["revision_id"]),
+            force_ocr=bool(payload.get("force_ocr", False)),
+        )
+        await index_sync_service.run_once(entity_type="candidate", entity_id=result.candidate_id)
+        if payload.get("passive_match") and services.match_service is not None:
+            repository.enqueue(TaskSpec(task_type="MATCH_CANDIDATE", queue_name="normal", priority=10,
+                payload={"candidate_id": result.candidate_id},
+                idempotency_key=f"passive-candidate:{result.revision_id}"))
         return result.revision_id
+
+    async def parse_jd(payload: dict[str, Any]) -> str:
+        result = await jd_pipeline.run(str(payload["revision_id"]))
+        await index_sync_service.run_once(entity_type="jd", entity_id=result.jd_id)
+        if payload.get("passive_match") and services.match_service is not None:
+            repository.enqueue(TaskSpec(task_type="MATCH_JD", queue_name="normal", priority=10,
+                payload={"revision_id": result.revision_id},
+                idempotency_key=f"passive-jd:{result.revision_id}"))
+        return result.revision_id
+
+    async def match_candidate(payload: dict[str, Any]) -> str | None:
+        candidate_id = str(payload["candidate_id"])
+        records = await match_service.reverse_match_candidate(candidate_id)
+        return match_service.record_reverse_run(candidate_id=candidate_id, records=records).run_id
+
+    async def match_job(payload: dict[str, Any]) -> str | None:
+        # Matching retries are separate from parsing and visible in the task list.
+        return (await match_service.match_and_record(revision_id=str(payload["revision_id"]))).run_id
 
     worker = TaskWorker(
         repository=repository,
         worker_id=f"desktop-{uuid4()}",
         queues=("interactive", "normal", "batch", "export"),
-        handlers={"PARSE_RESUME": parse_resume},
+        handlers={"PARSE_RESUME": parse_resume, "PARSE_JD": parse_jd,
+                  "MATCH_CANDIDATE": match_candidate, "MATCH_JD": match_job},
     )
     return RuntimeComponents(services=services, pipeline=pipeline, worker=worker, providers=providers)
 
@@ -257,18 +346,22 @@ def create_runtime_app(settings: Settings) -> FastAPI:
         scheduler_task = asyncio.create_task(
             runtime.services.scheduler_service.run_forever(interval_seconds=300)
         )
+        index_sync_task = asyncio.create_task(runtime.services.index_sync_service.run_forever())
         try:
             yield
         finally:
             worker_task.cancel()
             lease_recovery_task.cancel()
             scheduler_task.cancel()
+            index_sync_task.cancel()
             with suppress(asyncio.CancelledError):
                 await worker_task
             with suppress(asyncio.CancelledError):
                 await lease_recovery_task
             with suppress(asyncio.CancelledError):
                 await scheduler_task
+            with suppress(asyncio.CancelledError):
+                await index_sync_task
             if runtime.providers.http_client is not None:
                 await runtime.providers.http_client.aclose()
 
@@ -287,6 +380,8 @@ async def _worker_loop(worker: TaskWorker) -> None:
 async def _worker_after_index_maintenance(
     worker: TaskWorker,
     search_service: HybridSearchService,
+    *,
+    concurrency: int = 8,
 ) -> None:
     try:
         await asyncio.to_thread(search_service.optimize_pending)
@@ -294,7 +389,8 @@ async def _worker_after_index_maintenance(
         # The index is a rebuildable projection. A maintenance failure must not
         # stop durable SQLite tasks from continuing on the next worker cycle.
         pass
-    await _worker_loop(worker)
+    loops = [asyncio.create_task(_worker_loop(worker)) for _ in range(concurrency)]
+    await asyncio.gather(*loops)
 
 
 async def _lease_recovery_loop(

@@ -23,7 +23,7 @@ def _create_version_one_database(path: Path) -> None:
     engine.dispose()
 
 
-def test_migrate_upgrades_v1_to_v2_after_snapshot(tmp_path: Path) -> None:
+def test_migrate_upgrades_v1_to_v8_after_snapshot(tmp_path: Path) -> None:
     database = tmp_path / "recruit.sqlite3"
     _create_version_one_database(database)
     engine = create_engine_for(database)
@@ -34,10 +34,22 @@ def test_migrate_upgrades_v1_to_v2_after_snapshot(tmp_path: Path) -> None:
         versions = list(session.scalars(select(_models.SchemaVersion.version)))
         candidate = session.scalar(select(_models.Candidate))
     indexes = {index["name"] for index in inspect(engine).get_indexes("task")}
-    snapshots = list(tmp_path.glob("recruit.pre-v1-to-v2*.sqlite3"))
-    assert versions == [1, 2]
+    lead_columns = {column["name"] for column in inspect(engine).get_columns("bd_lead")}
+    stage_event_columns = {column["name"] for column in inspect(engine).get_columns("stage_event")}
+    revision_columns = {column["name"] for column in inspect(engine).get_columns("resume_revision")}
+    process_columns = {column["name"] for column in inspect(engine).get_columns("hiring_process")}
+    case_columns = {column["name"] for column in inspect(engine).get_columns("candidate_job_case")}
+    tables = set(inspect(engine).get_table_names())
+    snapshots = list(tmp_path.glob("recruit.pre-v*-to-v*.sqlite3"))
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert candidate is not None and candidate.display_name == "升级保留样本"
     assert "ix_task_status_updated" in indexes
+    assert {"confidence", "is_hiring", "session_id", "synthesized_json", "posted_time", "salary_range", "level", "requirements"} <= lead_columns
+    assert {"round_no", "round_name", "result"} <= stage_event_columns
+    assert {"error_code", "error_message"} <= revision_columns
+    assert {"version"} <= process_columns
+    assert {"template_id"} <= case_columns
+    assert {"case_round", "case_event"} <= tables
     assert len(snapshots) == 1 and snapshots[0].stat().st_size > 0
 
 

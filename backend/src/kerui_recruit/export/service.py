@@ -21,22 +21,34 @@ class ExportService:
             results = session.scalars(
                 select(MatchResult).where(MatchResult.run_id == run_id)
             ).all()
+            return self._match_workbook(session, results)
 
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet.title = "匹配结果"
-            sheet.append(["候选人", "总分", "处理状态", "推荐理由"])
+    def export_match_jd(self, revision_id: str) -> bytes:
+        """Export every persisted match result for a single JD revision."""
+        with self.session_factory() as session:
+            results = session.scalars(
+                select(MatchResult)
+                .where(MatchResult.jd_revision_id == revision_id)
+                .order_by(MatchResult.total_score.desc())
+            ).all()
+            return self._match_workbook(session, results)
 
-            for result in results:
-                candidate = session.get(Candidate, result.candidate_id)
-                name = candidate.display_name if candidate else result.candidate_id
-                sheet.append(
-                    [name, float(result.total_score or 0), result.status, result.reason or ""]
-                )
+    def _match_workbook(self, session: Session, results) -> bytes:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "匹配结果"
+        sheet.append(["候选人", "总分", "处理状态", "推荐理由"])
 
-            buffer = io.BytesIO()
-            workbook.save(buffer)
-            return buffer.getvalue()
+        for result in results:
+            candidate = session.get(Candidate, result.candidate_id)
+            name = candidate.display_name if candidate else result.candidate_id
+            sheet.append(
+                [name, float(result.total_score or 0), result.status, result.reason or ""]
+            )
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue()
 
     def export_mapping_tree(self, snapshot_id: str) -> bytes:
         """Flatten an org-tree snapshot into an Excel sheet."""

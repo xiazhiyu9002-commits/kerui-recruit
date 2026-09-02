@@ -4,6 +4,62 @@ import { ApiClient } from "../src/api/client";
 
 
 describe("ApiClient", () => {
+  test("preserves reminder case linkage, paused state and explicit Shanghai timestamps", async () => {
+    const requests: Request[] = [];
+    const linked = { id: "reminder-1", title: "跟进张三", note: null, remind_at: "2026-09-02T01:30:00Z", dismissed: false, dismissed_at: null, case_id: "case-1", paused_by_workflow: true };
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      return new Response(JSON.stringify(request.method === "GET" ? [linked] : linked), { status: 200 });
+    });
+    const created = await client.createReminder({ title: "跟进张三", remind_at: "2026-09-02T09:30:00+08:00", case_id: "case-1" });
+    expect(await requests[0].json()).toEqual({ title: "跟进张三", remind_at: "2026-09-02T09:30:00+08:00", case_id: "case-1" });
+    expect(created).toEqual(linked);
+    expect(await client.listReminders()).toEqual([linked]);
+    await client.createReminder({ title: "独立提醒", remind_at: "2026-09-02T09:30:00+08:00" });
+    expect(await requests[2].json()).toEqual({ title: "独立提醒", remind_at: "2026-09-02T09:30:00+08:00" });
+  });
+
+  test("requests only index retry work and preserves resume review fields at the HTTP boundary", async () => {
+    const requests: Request[] = [];
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      requests.push(new Request(input, init));
+      return new Response("{}", { status: 200 });
+    });
+    await client.indexStatus();
+    await client.retryIndexSync();
+    await client.getResumeReview("revision/1");
+    await client.approveResumeReview("revision/1", { name: "张三", skills: ["Python", "Go"] });
+    expect(requests.map((request) => [request.method, new URL(request.url).pathname])).toEqual([
+      ["GET", "/api/search/index-status"], ["POST", "/api/search/index-retry"],
+      ["GET", "/api/resumes/revisions/revision%2F1/review"], ["POST", "/api/resumes/revisions/revision%2F1/review"],
+    ]);
+    expect(await requests[1].json()).toEqual({});
+    expect(await requests[3].json()).toEqual({ fields: { name: "张三", skills: ["Python", "Go"] } });
+  });
+
+  test("preserves action time, note and retry identity across every workflow endpoint", async () => {
+    const requests: Request[] = [];
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      requests.push(new Request(input, init));
+      return new Response("{}", { status: 200 });
+    });
+    const payload = { occurred_at: "2026-08-30T15:30:00+08:00", note: "确认", idempotency_key: "stable-retry" };
+    await client.recommendCase("case-1", payload);
+    await client.enterInterview("case-1", { ...payload, round_name: "加面" });
+    await client.recordResult("case-1", "round-1", "通过", payload);
+    await client.passAndAdvance("case-1", "round-1", { ...payload, next_round_name: "HR" });
+    await client.offerCase("case-1", payload);
+    await client.onboardCase("case-1", payload);
+    await client.exitCase("case-1", "候选人退出", payload);
+    await client.voidEvent("event-1", payload);
+    expect(await Promise.all(requests.map((request) => request.json()))).toEqual([
+      payload, { ...payload, round_name: "加面" }, { ...payload, case_round_id: "round-1", result: "通过" },
+      { ...payload, case_round_id: "round-1", next_round_name: "HR" }, payload, payload,
+      { ...payload, result: "候选人退出" }, payload,
+    ]);
+  });
+
   test("adds the per-launch session token to JSON requests", async () => {
     let received: Request | undefined;
     const fetcher: typeof fetch = async (input, init) => {
@@ -20,6 +76,61 @@ describe("ApiClient", () => {
     expect(received?.url).toBe("http://127.0.0.1:43127/api/search/candidates");
     expect(received?.headers.get("X-Kerui-Session")).toBe("launch-token");
     expect(await received?.json()).toEqual({ query: "Python 金融", limit: 50 });
+  });
+
+  test("forwards explicit search filters without overriding natural-language defaults", async () => {
+    const requests: Request[] = [];
+    const client = new ApiClient("http://localhost", "token", async (input, init) => {
+      requests.push(new Request(input, init));
+      return new Response(JSON.stringify(requests.length === 1
+        ? { items: [], degraded_reasons: [] }
+        : { items: [], total: 123, page: 2, page_size: 50, has_more: true }), { status: 200 });
+    });
+    await client.searchCandidates("Python 上海", {
+      min_years: 5, highest_degree: "BACHELOR", locations: ["上海", "苏州"],
+      preferred_locations: ["北京"], exclude_skills: ["外包"],
+    });
+    await client.listCandidatesPage(2, 50);
+    expect(await requests[0].json()).toEqual({
+      query: "Python 上海", limit: 50,
+      filters: { min_years: 5, highest_degree: "BACHELOR", locations: ["上海", "苏州"],
+        preferred_locations: ["北京"], exclude_skills: ["外包"] },
+    });
+    expect(requests[1].url).toBe("http://localhost/api/resumes/candidates/page?page=2&page_size=50");
+  });
+
+  test("falls back to the legacy candidate list when an older sidecar lacks paging", async () => {
+    const urls: string[] = [];
+    const legacyItems = ["one", "two", "three"].map((name, index) => ({
+      candidate_id: `candidate-${index + 1}`,
+      revision_id: `revision-${index + 1}`,
+      display_name: name,
+      total_years: null,
+      highest_degree: null,
+      location: null,
+      status: "AVAILABLE",
+      revision_status: "READY",
+      phone: null,
+      original_filename: `${name}.pdf`,
+      parsed_data: null,
+    }));
+    const client = new ApiClient("http://localhost", "token", async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes("/candidates/page")) {
+        return new Response(JSON.stringify({ detail: "Not Found" }), { status: 404 });
+      }
+      return new Response(JSON.stringify(legacyItems), { status: 200 });
+    });
+
+    const page = await client.listCandidatesPage(2, 2);
+
+    expect(urls).toEqual([
+      "http://localhost/api/resumes/candidates/page?page=2&page_size=2",
+      "http://localhost/api/resumes/candidates",
+    ]);
+    expect(page.items.map((item) => item.display_name)).toEqual(["three"]);
+    expect(page).toMatchObject({ total: 3, page: 2, page_size: 2, has_more: false });
   });
 
   test("lets the browser set the multipart upload boundary", async () => {
@@ -178,7 +289,7 @@ describe("ApiClient", () => {
       received.push(new Request(input, init));
       return new Response(JSON.stringify(received.length === 1
         ? { results: [] }
-        : { result_id: "result-1", status: "短名单" }), {
+        : { result_id: "result-1", status: "保留" }), {
         headers: { "Content-Type": "application/json" },
         status: 200
       });
@@ -186,12 +297,12 @@ describe("ApiClient", () => {
     const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
 
     await client.matchBatch(["rev-1", "rev-2"], 30);
-    await client.markMatchResult("result/1", "短名单");
+    await client.markMatchResult("result/1", "保留");
 
     expect(received[0].url).toBe("http://127.0.0.1:43127/api/match/batch");
     expect(await received[0].json()).toEqual({ revision_ids: ["rev-1", "rev-2"], limit: 30 });
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/match/result/result%2F1/mark");
-    expect(await received[1].json()).toEqual({ status: "短名单" });
+    expect(await received[1].json()).toEqual({ status: "保留" });
   });
 
   test("posts portable backup and restore requests", async () => {

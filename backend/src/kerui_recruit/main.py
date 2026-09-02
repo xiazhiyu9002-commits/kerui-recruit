@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from kerui_recruit.api.auth import valid_session
 from kerui_recruit.api.backup import router as backup_router
+from kerui_recruit.api.bd_agent import router as bd_agent_router
 from kerui_recruit.api.bd_search import router as bd_search_router
 from kerui_recruit.api.cases import router as cases_router
 from kerui_recruit.api.correction import router as correction_router
@@ -17,10 +18,12 @@ from kerui_recruit.api.dashboard import router as dashboard_router
 from kerui_recruit.api.diagnostics import router as diagnostics_router
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.jd import router as jd_router
+from kerui_recruit.api.indexes import router as indexes_router
 from kerui_recruit.api.mapping import router as mapping_router
 from kerui_recruit.api.match import router as match_router
 from kerui_recruit.api.migration import router as migration_router
 from kerui_recruit.api.onboarding import router as onboarding_router
+from kerui_recruit.api.org import router as org_router
 from kerui_recruit.api.reminders import router as reminders_router
 from kerui_recruit.api.resumes import router as resumes_router
 from kerui_recruit.api.search import router as search_router
@@ -30,6 +33,8 @@ from kerui_recruit.api.soft_delete import router as soft_delete_router
 from kerui_recruit.api.tasks import router as tasks_router
 from kerui_recruit.health.service import HealthService
 from kerui_recruit.resumes.ingest import UnsupportedResumeType
+from kerui_recruit.match.service import MatchEligibilityError, ReverseMatchUnavailableError
+from kerui_recruit.cases.service import CaseStateError
 
 
 Lifespan = Callable[[FastAPI], AsyncContextManager[None]]
@@ -90,6 +95,44 @@ def create_app(
             },
         )
 
+    @app.exception_handler(MatchEligibilityError)
+    async def handle_match_conflict(request: Request, error: MatchEligibilityError) -> JSONResponse:
+        return await handle_api_error(request, ApiError(409, "E_MATCH_NOT_ELIGIBLE",
+            "候选人或岗位状态已变化；请确认候选人可推荐、岗位开放且当前版本解析完成后重试"))
+
+    @app.exception_handler(CaseStateError)
+    async def handle_case_conflict(request: Request, error: CaseStateError) -> JSONResponse:
+        return await handle_api_error(request, ApiError(409, "E_CASE_STATE_CONFLICT", str(error)))
+
+    @app.exception_handler(ReverseMatchUnavailableError)
+    async def handle_reverse_unavailable(request: Request, error: ReverseMatchUnavailableError) -> JSONResponse:
+        return await handle_api_error(request, ApiError(503, "E_REVERSE_MATCH_UNAVAILABLE",
+            "岗位索引尚未就绪、不兼容或匹配超时；请检查索引同步状态后重试"))
+
+    @app.exception_handler(LookupError)
+    async def handle_lookup_error(request: Request, error: LookupError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "code": "E_NOT_FOUND",
+                "message": str(error),
+                "request_id": getattr(request.state, "request_id", None),
+                "details": None,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, error: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "E_INTERNAL",
+                "message": str(error),
+                "request_id": getattr(request.state, "request_id", None),
+                "details": None,
+            },
+        )
+
     @app.get("/health/live")
     def live() -> dict[str, str]:
         return {"status": "alive"}
@@ -106,6 +149,7 @@ def create_app(
         app.include_router(resumes_router)
         app.include_router(tasks_router)
         app.include_router(search_router)
+        app.include_router(indexes_router)
         app.include_router(jd_router)
         app.include_router(match_router)
         app.include_router(backup_router)
@@ -114,12 +158,14 @@ def create_app(
         app.include_router(mapping_router)
         app.include_router(reminders_router)
         app.include_router(bd_search_router)
+        app.include_router(bd_agent_router)
         app.include_router(soft_delete_router)
         app.include_router(cases_router)
         app.include_router(dashboard_router)
         app.include_router(settings_router)
         app.include_router(migration_router)
         app.include_router(onboarding_router)
+        app.include_router(org_router)
 
     # Added last so CORS is outermost and answers preflight OPTIONS before the
     # session-token guard. The sidecar binds loopback only and authenticates

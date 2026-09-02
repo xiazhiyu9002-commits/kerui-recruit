@@ -90,6 +90,33 @@ def test_sync_mailbox_filters_by_sender_domain(
     assert {m.uid for m in result} == {1, 2}
 
 
+def test_sync_mailbox_filters_by_full_email_and_prefixed_domain(
+    session_factory: sessionmaker[Session],
+) -> None:
+    fake = FakeImap(
+        messages=[
+            MailMessage(uid=1, subject="小号简历", sender="3504014884@qq.com", body="...", date="2026-01-01"),
+            MailMessage(uid=2, subject="boss通知", sender="hr@notice.bosszhipin.com", body="...", date="2026-01-02"),
+            MailMessage(uid=3, subject="其他QQ", sender="other@qq.com", body="...", date="2026-01-03"),
+            MailMessage(uid=4, subject="其他", sender="x@y.com", body="...", date="2026-01-04"),
+        ]
+    )
+    service = MailService(session_factory=session_factory, imap=fake)
+    result = service.sync_mailbox("INBOX", sender_domains={"3504014884@qq.com", "@notice.bosszhipin.com"})
+    assert {m.uid for m in result} == {1, 2}
+
+
+def test_decode_filename_handles_rfc2047_resume_name() -> None:
+    import base64
+
+    from kerui_recruit.mail.imap_provider import _decode_filename
+
+    encoded = "=?utf-8?B?" + base64.b64encode("简历.pdf".encode("utf-8")).decode() + "?="
+    assert _decode_filename(encoded) == "简历.pdf"
+    assert _decode_filename("plain.pdf") == "plain.pdf"
+    assert _decode_filename(None) == ""
+
+
 def test_mail_ingest_creates_revision_from_attachment(
     session_factory: sessionmaker[Session], tmp_path: Path
 ) -> None:

@@ -29,6 +29,8 @@ class CreateSnapshotResponse(BaseModel):
 class RestoreResponse(BaseModel):
     restored_from: str
     safety_backup: str
+    restart_required: bool = True
+    status: str = "pending_restart"
 
 
 @router.get("/snapshots", response_model=list[SnapshotItem])
@@ -47,7 +49,11 @@ def create_snapshot(command: CreateSnapshotRequest, request: Request) -> CreateS
 @router.post("/restore/{filename}", response_model=RestoreResponse)
 def restore_snapshot(filename: str, request: Request) -> RestoreResponse:
     services: AppServices = request.app.state.services
-    safety = services.backup_service.restore_snapshot(filename)
+    try:
+        safety = services.backup_service.restore_snapshot(filename)
+    except ValueError as error:
+        from kerui_recruit.api.errors import ApiError
+        raise ApiError(422, "E_BACKUP_INVALID", str(error)) from error
     return RestoreResponse(restored_from=filename, safety_backup=str(safety))
 
 

@@ -2,9 +2,10 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from kerui_recruit.backup.service import BackupService
+from kerui_recruit.backup.service import BackupService, apply_pending_restore, finalize_pending_restore
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Candidate
 from kerui_recruit.db.session import create_engine_for
@@ -71,8 +72,21 @@ def test_restore_snapshot(
 
     service.restore_snapshot(snapshot.name)
 
+    # Restores are staged so the live process never swaps the database below
+    # active workers and ORM connections. Apply it at the next-start boundary.
     with session_factory() as session:
-        from sqlalchemy import select
+        names = session.scalars(select(Candidate.display_name)).all()
+        assert "曹操" in names
+    engine.dispose()
+    report = apply_pending_restore(
+        database_path=tmp_path / "recruit.sqlite3",
+        search_dir=tmp_path / "search",
+        backup_dir=tmp_path / "backups",
+    )
+    assert report is not None
+    finalize_pending_restore(report)
+
+    with session_factory() as session:
         names = session.scalars(select(Candidate.display_name)).all()
         assert "刘备" in names
         assert "曹操" not in names

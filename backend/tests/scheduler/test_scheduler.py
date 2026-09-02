@@ -1,16 +1,20 @@
 from decimal import Decimal
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.migrate import migrate
-from kerui_recruit.db.models import Candidate, Jd, JdRevision
+from kerui_recruit.db.models import Blob, Candidate, Jd, JdRevision, ResumeDocument, ResumeRevision
+from kerui_recruit.match.jd_index import JdSearchIndex
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.providers.local import LocalHashEmbeddingProvider, LocalKeywordReranker
 from kerui_recruit.scheduler.service import SchedulerService
-from kerui_recruit.search.contracts import SearchChunk, SearchHit
+from kerui_recruit.search.contracts import CandidateFilters, SearchChunk, SearchHit
+from kerui_recruit.search.service import HybridSearchService
 
 
 class FakeIndex:
@@ -22,6 +26,12 @@ class FakeIndex:
 
     def delete_revision(self, revision_id: str) -> None:
         self.chunks = [c for c in self.chunks if c.revision_id != revision_id]
+
+    def is_ready(self) -> bool:
+        return len(self.chunks) > 0
+
+    def filter_search(self, filters: CandidateFilters, limit: int) -> list[SearchHit]:
+        return []
 
     def search(self, request) -> list[SearchHit]:
         return [
@@ -48,7 +58,7 @@ def session_factory(tmp_path: Path) -> sessionmaker[Session]:
 
 
 @pytest.mark.asyncio
-async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionmaker[Session]) -> None:
+async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionmaker[Session], tmp_path: Path) -> None:
     with session_factory() as session:
         candidate = Candidate(display_name="张三", status="AVAILABLE")
         jd = Jd(company="某公司", title="Java", status="OPEN")
@@ -64,6 +74,15 @@ async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionma
         session.add(revision)
         session.commit()
         candidate_id, revision_id = candidate.id, revision.id
+        blob = Blob(content_sha256="b" * 64, suffix=".txt", size_bytes=30, storage_path="test-resume")
+        document = ResumeDocument(candidate_id=candidate_id)
+        session.add_all([blob, document])
+        session.flush()
+        session.add(ResumeRevision(id="rev-1", document_id=document.id, blob_id=blob.id,
+                                   content_sha256=blob.content_sha256, original_filename="resume.txt",
+                                   status="READY", is_current=True, raw_text="Java 后端工程师",
+                                   parsed_data={"total_years": 4, "highest_degree": "BACHELOR", "location": "上海"}))
+        session.commit()
 
     index = FakeIndex(
         [
@@ -80,11 +99,18 @@ async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionma
             )
         ]
     )
+    embedding = LocalHashEmbeddingProvider(dimension=64)
+    jd_index = JdSearchIndex(tmp_path / "jobs", vector_dimension=64)
+    jd_index.upsert(jd_id=jd.id, revision_id=revision_id, content="Java 后端",
+                    vector=(await embedding.embed_documents(["Java 后端"]))[0])
     match_service = MatchService(
         session_factory=session_factory,
-        index=index,
-        embedding_provider=LocalHashEmbeddingProvider(dimension=64),
-        reranker_provider=LocalKeywordReranker(),
+        jd_index=jd_index,
+        search_service=HybridSearchService(
+            index=index,
+            embedding_provider=embedding,
+            reranker_provider=LocalKeywordReranker(),
+        ),
     )
     scheduler = SchedulerService(
         session_factory=session_factory,
@@ -98,3 +124,32 @@ async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionma
     assert matches[0].jd_id == jd.id
     assert matches[0].company == "某公司"
     assert matches[0].title == "Java"
+    assert matches[0].score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_blocking_integrations_do_not_stall_event_loop(session_factory):
+    import time
+    release = threading.Event()
+    started = threading.Event()
+
+    class BlockingMail:
+        def poll_and_ingest(self, sender_domains=None):
+            started.set()
+            release.wait(1)
+            return []
+
+    scheduler = SchedulerService(session_factory=session_factory, match_service=None,
+                                 reminder_service=None, mail_ingest_service=BlockingMail())
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    started_at = time.monotonic()
+    running = asyncio.create_task(scheduler.run_forever(interval_seconds=60))
+    assert await asyncio.to_thread(started.wait, 0.5)
+    await asyncio.sleep(0.02)
+    assert time.monotonic() - started_at < 0.2
+    release.set()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    timer.cancel()

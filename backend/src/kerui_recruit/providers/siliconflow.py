@@ -80,6 +80,18 @@ class SiliconFlowRerankerProvider:
         self.model = model
 
     async def rerank(self, query: str, documents: list[str]) -> list[int]:
+        scored = await self.rerank_scored(query, documents)
+        seen: set[int] = set()
+        order: list[int] = []
+        for index, _ in sorted(scored, key=lambda item: item[1], reverse=True):
+            if index not in seen:
+                seen.add(index)
+                order.append(index)
+        return order
+
+    async def rerank_scored(self, query: str, documents: list[str]) -> list[tuple[int, float]]:
+        """Return (index, relevance_score) pairs from the provider, preserving
+        the model's actual relevance scores instead of a positional proxy."""
         if not documents:
             return []
         try:
@@ -102,14 +114,10 @@ class SiliconFlowRerankerProvider:
             raise map_http_error(response.status_code)
         try:
             payload = response.json()
-            results = sorted(
-                payload["results"],
-                key=lambda item: item.get("relevance_score", 0.0),
-                reverse=True,
-            )
-            order = [item["index"] for item in results]
-            seen: set[int] = set()
-            return [index for index in order if not (index in seen or seen.add(index))]
+            return [
+                (item["index"], float(item.get("relevance_score", 0.0)))
+                for item in payload["results"]
+            ]
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ProviderError(
                 code="E_API_SCHEMA",

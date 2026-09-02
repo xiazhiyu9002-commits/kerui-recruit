@@ -5,6 +5,8 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
+from kerui_recruit.cases.state import refresh_links
+from kerui_recruit.search.sync import enqueue_sync
 
 
 class SoftDeleteService:
@@ -17,12 +19,16 @@ class SoftDeleteService:
         with self.session_factory() as session:
             entity = _lookup(session, entity_type, entity_id)
             entity.deleted_at = datetime.now(timezone.utc)
+            enqueue_sync(session, entity_type, entity_id)
+            refresh_links(session, **{f"{entity_type}_id": entity_id})
             session.commit()
 
     def restore(self, entity_type: str, entity_id: str) -> None:
         with self.session_factory() as session:
             entity = _lookup(session, entity_type, entity_id)
             entity.deleted_at = None
+            enqueue_sync(session, entity_type, entity_id)
+            refresh_links(session, **{f"{entity_type}_id": entity_id})
             session.commit()
 
     def is_deleted(self, entity_type: str, entity_id: str) -> bool:
@@ -74,6 +80,7 @@ class SoftDeleteService:
                 select(Jd).where(Jd.deleted_at.is_not(None), Jd.deleted_at < cutoff)
             ).all()
             for jd in jds:
+                enqueue_sync(session, "jd", jd.id)
                 session.delete(jd)
                 removed += 1
 
@@ -84,6 +91,7 @@ class SoftDeleteService:
                 )
             ).all()
             for candidate in candidates:
+                enqueue_sync(session, "candidate", candidate.id)
                 for document in candidate.documents:
                     for revision in document.revisions:
                         blob = revision.blob

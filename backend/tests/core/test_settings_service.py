@@ -14,13 +14,13 @@ def test_settings_update_and_masked_round_trip(tmp_path: Path) -> None:
     service.update(
         {
             "deepseek_api_key": "sk-secret-key-123456",
-            "deepseek_model": "deepseek-v4-flash",
+            "deepseek_base_url": "https://api.deepseek.com",
             "tavily_base_url": "https://api.tavily.com",
         }
     )
 
     masked = service.get_masked()
-    assert masked["deepseek_model"] == "deepseek-v4-flash"
+    assert masked["deepseek_base_url"] == "https://api.deepseek.com"
     assert masked["deepseek_api_key"] != "sk-secret-key-123456"
     assert "sk-" in masked["deepseek_api_key"]
     assert masked["tavily_base_url"] == "https://api.tavily.com"
@@ -44,11 +44,11 @@ def test_submitting_an_unchanged_mask_does_not_replace_the_secret(tmp_path: Path
     store = SettingsStore(tmp_path / "settings.json")
     encryption = EncryptionService(key_path=str(tmp_path / "encryption.key"))
     service = SettingsService(store=store, encryption=encryption)
-    service.update({"deepseek_api_key": "sk-original-secret", "deepseek_model": "old"})
+    service.update({"deepseek_api_key": "sk-original-secret", "deepseek_base_url": "https://old.example.com"})
     masked_key = service.get_masked()["deepseek_api_key"]
 
-    service.update({"deepseek_api_key": masked_key, "deepseek_model": "new"})
+    service.update({"deepseek_api_key": masked_key, "deepseek_base_url": "https://new.example.com"})
 
     raw = store.load()
     assert encryption.decrypt(raw["deepseek_api_key"]) == "sk-original-secret"
-    assert raw["deepseek_model"] == "new"
+    assert raw["deepseek_base_url"] == "https://new.example.com"

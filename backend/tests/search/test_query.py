@@ -1,4 +1,4 @@
-from kerui_recruit.search.query import parse_query
+from kerui_recruit.search.query import normalize_skill, parse_query
 
 
 def test_parse_query_extracts_years_degree_location_and_qs() -> None:
@@ -26,3 +26,161 @@ def test_parse_query_maps_degree_alias_to_normalized_form() -> None:
 
     assert parsed.filters.highest_degree == "BACHELOR"
     assert "本科" not in parsed.keywords
+
+
+# --- 年限范围与毕业年份 ---
+
+
+def test_range_years_3_to_5() -> None:
+    parsed = parse_query("Java 3-5年")
+
+    assert parsed.filters.min_years == 3.0
+    assert parsed.filters.max_years == 5.0
+
+
+def test_max_years_within() -> None:
+    parsed = parse_query("3年以内")
+
+    assert parsed.filters.min_years is None
+    assert parsed.filters.max_years == 3.0
+
+
+def test_min_years_at_least() -> None:
+    parsed = parse_query("至少3年")
+
+    assert parsed.filters.min_years == 3.0
+    assert parsed.filters.max_years is None
+
+
+def test_graduation_year_is_not_experience() -> None:
+    parsed = parse_query("2020年毕业 硕士")
+
+    assert parsed.filters.min_years is None
+    assert parsed.filters.max_years is None
+
+
+# --- 学历层级 ---
+
+
+def test_degree_and_above_is_inclusive() -> None:
+    parsed = parse_query("本科及以上")
+
+    assert parsed.filters.highest_degree == "BACHELOR"
+    assert parsed.filters.degree_exact is False
+
+
+def test_degree_exact_only_bachelor() -> None:
+    parsed = parse_query("仅本科")
+
+    assert parsed.filters.highest_degree == "BACHELOR"
+    assert parsed.filters.degree_exact is True
+
+
+def test_degree_priority_is_not_hard_filter() -> None:
+    parsed = parse_query("学历不限，本科优先")
+
+    assert parsed.filters.highest_degree is None
+
+
+# --- 多地点与现居/意向 ---
+
+
+def test_multi_location_or() -> None:
+    parsed = parse_query("上海或北京 Java")
+
+    assert set(parsed.filters.locations) == {"上海", "北京"}
+
+
+def test_preferred_location_separated() -> None:
+    parsed = parse_query("现居上海，期望北京 Java")
+
+    assert parsed.filters.location == "上海"
+    assert parsed.filters.preferred_location == "北京"
+
+
+# --- 否定与排除 ---
+
+
+def test_soft_negation_not_positive() -> None:
+    parsed = parse_query("不要求Java Python")
+
+    assert "Java" not in parsed.keywords
+    assert parsed.filters.exclude_skills == ()
+
+
+def test_exclusion_becomes_exclude_skill() -> None:
+    parsed = parse_query("排除Java Python")
+
+    assert parsed.filters.exclude_skills == ("Java",)
+
+
+# --- 纯过滤查询 ---
+
+
+def test_pure_filter_query_has_empty_keywords() -> None:
+    parsed = parse_query("硕士 上海")
+
+    assert parsed.keywords == ""
+
+
+# --- 技能标准化 ---
+
+
+def test_normalize_skill_keeps_java_distinct_from_javascript() -> None:
+    assert normalize_skill("java") == "Java"
+    assert normalize_skill("JAVA") == "Java"
+    assert normalize_skill("JavaScript") == "JavaScript"
+    assert normalize_skill("java") != normalize_skill("javascript")
+
+
+def test_normalize_skill_preserves_cpp_and_csharp() -> None:
+    assert normalize_skill("C++") == "C++"
+    assert normalize_skill("C#") == "C#"
+
+
+# --- 回归：本次修复的边界问题 ---
+
+
+def test_graduation_prefix_year_is_not_experience() -> None:
+    parsed = parse_query("毕业于2020年 Java")
+
+    assert parsed.filters.min_years is None
+    assert parsed.filters.max_years is None
+    assert "Java" in parsed.keywords
+
+
+def test_required_degree_and_above_is_inclusive() -> None:
+    parsed = parse_query("必须本科及以上 Java")
+
+    assert parsed.filters.highest_degree == "BACHELOR"
+    assert parsed.filters.degree_exact is False
+
+
+def test_preferred_multi_location_is_not_residence() -> None:
+    parsed = parse_query("期望上海或北京 Java")
+
+    assert set(parsed.filters.preferred_locations) == {"上海", "北京"}
+    assert "北京" not in parsed.filters.locations
+    assert "上海" not in parsed.filters.locations
+    assert parsed.filters.location is None
+
+
+def test_soft_negation_degree_not_hard_filter() -> None:
+    parsed = parse_query("不要求硕士 Java")
+
+    assert parsed.filters.highest_degree is None
+    assert "Java" in parsed.keywords
+
+
+def test_exclusion_in_pure_filter_query() -> None:
+    parsed = parse_query("硕士 排除Java")
+
+    assert parsed.keywords == ""
+    assert parsed.filters.exclude_skills == ("Java",)
+
+
+def test_preferred_locations_before_residence_are_kept_separate() -> None:
+    parsed = parse_query("意向深圳或广州，现居上海 Python")
+    assert parsed.filters.location_values() == ("上海",)
+    assert parsed.filters.preferred_location_values() == ("深圳", "广州")
+    assert parsed.keywords == "Python"

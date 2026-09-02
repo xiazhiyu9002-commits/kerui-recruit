@@ -32,7 +32,7 @@ def _headers() -> dict[str, str]:
 
 def _pdf_bytes(text: str) -> bytes:
     document = pymupdf.open()
-    document.new_page().insert_text((72, 72), text)
+    document.new_page().insert_text((72, 72), text, fontname="china-s")
     payload = document.tobytes()
     document.close()
     return payload
@@ -100,6 +100,19 @@ def test_desensitized_sample_end_to_end(client: TestClient) -> None:
         headers=_headers(),
     )
     assert jd.status_code == 202
+    # Import is asynchronous; a pending parse is deliberately not matchable.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        jobs = client.get("/api/jd", headers=_headers()).json()
+        current = next(item for item in jobs if item["revision_id"] == jd.json()["revision_id"])
+        if current["status"] == "READY":
+            assert current["jd_status"] == "OPEN"
+            pending = client.app.state.services.index_sync_service.status()["items"]
+            if not any(item["entity_type"] == "jd" and item["entity_id"] == current["jd_id"] for item in pending):
+                break
+        time.sleep(.05)
+    else:
+        raise AssertionError("Local JD parsing did not finish")
     matched = client.post(
         "/api/match/jd",
         json={"revision_id": jd.json()["revision_id"], "limit": 20},
@@ -111,15 +124,15 @@ def test_desensitized_sample_end_to_end(client: TestClient) -> None:
 
     # 4a. 收藏/人工标记：对匹配结果打标记
     items = matched.json()["items"]
-    if items:
-        result_id = items[0]["result_id"]
-        marked = client.post(
-            f"/api/match/result/{result_id}/mark",
-            json={"status": "保留"},
-            headers=_headers(),
-        )
-        assert marked.status_code == 200
-        assert marked.json()["status"] == "保留"
+    assert any(item["candidate_id"] == first["candidate_id"] for item in items)
+    result_id = next(item["result_id"] for item in items if item["candidate_id"] == first["candidate_id"])
+    marked = client.post(
+        f"/api/match/result/{result_id}/mark",
+        json={"status": "保留"},
+        headers=_headers(),
+    )
+    assert marked.status_code == 200
+    assert marked.json()["status"] == "保留"
 
     # 5. 导出：匹配结果可导出为 Excel
     exported = client.get(f"/api/match/run/{run_id}/export", headers=_headers())

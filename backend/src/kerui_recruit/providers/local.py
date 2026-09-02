@@ -4,6 +4,7 @@ import hashlib
 import math
 import re
 
+from kerui_recruit.jd.extract import split_jd_text
 from kerui_recruit.jd.structured import ParsedJd
 from kerui_recruit.resumes.structured import ParsedResume
 
@@ -155,3 +156,6 @@ class LocalJdParser:
             summary=compact[:500],
             ai_category=ai_category,
         )
+
+    async def split_jds(self, text: str) -> list[str]:
+        return split_jd_text(text)

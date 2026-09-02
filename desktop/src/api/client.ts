@@ -3,27 +3,51 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   BackupSnapshot,
+  BdAgentQueryResult,
   BdLead,
+  BdProgress,
   CandidateContact,
+  CandidateListItem,
+  CandidatePage,
+  CandidateSearchFilters,
   CandidateSearchResult,
   CaseItem,
+  CaseActionInput,
+  CaseDetail,
+  CaseEventItem,
+  CaseRoundItem,
   CorrectionRecord,
+  DashboardByJd,
   DashboardOverview,
+  DashboardTrendItem,
   DeletedItem,
   DiagnosticsData,
   ImportedResume,
+  CreateReminderInput,
+  IndexSyncStatus,
+  JdListItem,
   MappingProject,
   MappingSnapshot,
   MappingTreeNode,
+  MatchCandidateItem,
   MatchMarkStatus,
+  MatchResultGroup,
   MigrationReport,
   OnboardingStatus,
+  CreateOrgDepartmentInput,
+  CreateOrgEmployeeInput,
+  UpdateOrgDepartmentInput,
+  UpdateOrgEmployeeInput,
+  OrgCompany,
+  OrgDepartment,
+  OrgEmployee,
+  OrgTreeNode,
   ProviderCheck,
   RecruitmentApi,
   ReminderItem,
   ReverseMatchItem,
   ResumeRevision,
-  StageEventItem,
+  ResumeReview,
   TaskAction,
   TaskStatus
 } from "../App";
@@ -36,6 +60,31 @@ export interface RuntimeConfig {
 
 interface ApiError {
   message?: string;
+  detail?: string;
+}
+
+class ApiRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+export interface DashboardQuery {
+  company?: string;
+  jd_id?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+function _dashQuery(filters?: DashboardQuery): string {
+  if (!filters) return "";
+  const parts: string[] = [];
+  if (filters.company) parts.push(`company=${encodeURIComponent(filters.company)}`);
+  if (filters.jd_id) parts.push(`jd_id=${encodeURIComponent(filters.jd_id)}`);
+  if (filters.date_from) parts.push(`date_from=${encodeURIComponent(filters.date_from)}`);
+  if (filters.date_to) parts.push(`date_to=${encodeURIComponent(filters.date_to)}`);
+  return parts.length ? `?${parts.join("&")}` : "";
 }
 
 
@@ -108,12 +157,72 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
-  searchCandidates(query: string): Promise<CandidateSearchResult> {
+  reparseResume(revisionId: string, forceOcr: boolean): Promise<{ revision_id: string; task_id: string }> {
+    return this.request<{ revision_id: string; task_id: string }>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/reparse`,
+      {
+        body: JSON.stringify({ force_ocr: forceOcr }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  async downloadResume(revisionId: string, filename: string) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/resumes/revisions/${encodeURIComponent(revisionId)}/download`,
+      { headers }
+    );
+    if (!response.ok) throw new Error("下载失败");
+    const blob = await response.blob();
+    this.triggerDownload(blob, filename);
+  }
+
+  async previewResume(revisionId: string): Promise<string> {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/resumes/revisions/${encodeURIComponent(revisionId)}/preview`,
+      { headers }
+    );
+    if (!response.ok) throw new Error("预览失败");
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  }
+
+  searchCandidates(query: string, filters?: CandidateSearchFilters): Promise<CandidateSearchResult> {
     return this.request<CandidateSearchResult>("/api/search/candidates", {
-      body: JSON.stringify({ query, limit: 50 }),
+      body: JSON.stringify({ query, limit: 50, ...(filters && Object.keys(filters).length ? { filters } : {}) }),
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
+  }
+
+  listCandidates(): Promise<CandidateListItem[]> {
+    return this.request<CandidateListItem[]>("/api/resumes/candidates");
+  }
+
+  async listCandidatesPage(page: number, pageSize: number): Promise<CandidatePage> {
+    try {
+      return await this.request<CandidatePage>(
+        `/api/resumes/candidates/page?page=${encodeURIComponent(page)}&page_size=${encodeURIComponent(pageSize)}`
+      );
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.status !== 404) throw error;
+      // Transitional compatibility for a desktop frontend that reloads before
+      // its already-running sidecar has restarted with the paging endpoint.
+      const items = await this.listCandidates();
+      const start = Math.max(0, (page - 1) * pageSize);
+      return {
+        items: items.slice(start, start + pageSize),
+        total: items.length,
+        page,
+        page_size: pageSize,
+        has_more: start + pageSize < items.length,
+      };
+    }
   }
 
   importJd(input: { company: string; title: string; sourceText: string }) {
@@ -137,6 +246,52 @@ export class ApiClient implements RecruitmentApi {
       body: form,
       method: "POST"
     });
+  }
+
+  importJdBatch(sourceText: string) {
+    return this.request<{ imported: { jd_id: string; revision_id: string }[] }>(
+      "/api/jd/import-batch",
+      {
+        body: JSON.stringify({ source_text: sourceText }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  importJdBatchFile(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    return this.request<{ imported: { jd_id: string; revision_id: string }[] }>(
+      "/api/jd/import-batch-file",
+      { body: form, method: "POST" }
+    );
+  }
+
+  listJds(): Promise<JdListItem[]> {
+    return this.request<JdListItem[]>("/api/jd");
+  }
+
+  updateJdStatus(jdId: string, status: string) {
+    return this.request<{ jd_id: string; status: string }>(
+      `/api/jd/${encodeURIComponent(jdId)}/status`,
+      {
+        body: JSON.stringify({ status }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      }
+    );
+  }
+
+  updateJdField(jdId: string, field: string, value: unknown) {
+    return this.request<{ jd_id: string; revision_id: string; field: string; value: unknown }>(
+      `/api/jd/${encodeURIComponent(jdId)}/field`,
+      {
+        body: JSON.stringify({ field, value }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
+    );
   }
 
   matchJd(revisionId: string, limit = 20) {
@@ -170,6 +325,47 @@ export class ApiClient implements RecruitmentApi {
         method: "POST"
       }
     );
+  }
+
+  listMatchResults() {
+    return this.request<{ groups: MatchResultGroup[] }>("/api/match/results");
+  }
+
+  listMatchResultsForCandidate(candidateId: string) {
+    return this.request<MatchCandidateItem[]>(
+      `/api/match/candidate/${encodeURIComponent(candidateId)}`
+    );
+  }
+
+  matchCandidate(candidateId: string) {
+    return this.request<MatchCandidateItem[]>(
+      `/api/match/candidate/${encodeURIComponent(candidateId)}`,
+      { method: "POST" }
+    );
+  }
+
+  createCaseFromMatchResult(resultId: string) {
+    return this.request<{ case_id: string; result_id: string; status: string }>(
+      `/api/match/result/${encodeURIComponent(resultId)}/create-case`,
+      { method: "POST" }
+    );
+  }
+
+  async exportMatchJd(revisionId: string) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    const response = await this.fetcher(
+      `${this.baseUrl}/api/match/jd/${encodeURIComponent(revisionId)}/export`,
+      { headers }
+    );
+    if (!response.ok) throw new Error("导出失败");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `match_${revisionId}.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   health() {
@@ -221,6 +417,127 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
+  listCompanies() {
+    return this.request<OrgCompany[]>("/api/org/companies");
+  }
+
+  createCompany(name: string) {
+    return this.request<OrgCompany>("/api/org/companies", {
+      body: JSON.stringify({ name }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  updateCompany(companyId: string, name: string) {
+    return this.request<OrgCompany>(
+      `/api/org/companies/${encodeURIComponent(companyId)}`,
+      {
+        body: JSON.stringify({ name }),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      }
+    );
+  }
+
+  listDepartments(companyId: string) {
+    return this.request<OrgDepartment[]>(
+      `/api/org/companies/${encodeURIComponent(companyId)}/departments`
+    );
+  }
+
+  createDepartment(input: CreateOrgDepartmentInput) {
+    return this.request<OrgDepartment>("/api/org/departments", {
+      body: JSON.stringify(input),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  listEmployees(companyId: string) {
+    return this.request<OrgEmployee[]>(
+      `/api/org/companies/${encodeURIComponent(companyId)}/employees`
+    );
+  }
+
+  getOrgTree(companyId: string) {
+    return this.request<OrgTreeNode>(
+      `/api/org/companies/${encodeURIComponent(companyId)}/tree`
+    );
+  }
+
+  createEmployee(input: CreateOrgEmployeeInput) {
+    return this.request<OrgEmployee>("/api/org/employees", {
+      body: JSON.stringify(input),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  async exportOrgInternal(companyId: string) {
+    await this.download(
+      `/api/org/companies/${encodeURIComponent(companyId)}/export`,
+      `org_internal_${companyId}.xlsx`
+    );
+  }
+
+  async exportOrgClient(companyId: string) {
+    await this.download(
+      `/api/org/companies/${encodeURIComponent(companyId)}/export-client`,
+      `org_client_${companyId}.xlsx`
+    );
+  }
+
+  async exportOrgArchPdf(companyId: string) {
+    await this.download(
+      `/api/org/companies/${encodeURIComponent(companyId)}/export-pdf`,
+      `org_arch_${companyId}.pdf`
+    );
+  }
+
+  updateDepartment(departmentId: string, changes: UpdateOrgDepartmentInput) {
+    return this.request<OrgDepartment>(
+      `/api/org/departments/${encodeURIComponent(departmentId)}`,
+      {
+        body: JSON.stringify(changes),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      }
+    );
+  }
+
+  async deleteDepartment(departmentId: string) {
+    await this.request<{ deleted: boolean }>(
+      `/api/org/departments/${encodeURIComponent(departmentId)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  updateEmployee(employeeId: string, changes: UpdateOrgEmployeeInput) {
+    return this.request<OrgEmployee>(
+      `/api/org/employees/${encodeURIComponent(employeeId)}`,
+      {
+        body: JSON.stringify(changes),
+        headers: { "Content-Type": "application/json" },
+        method: "PATCH"
+      }
+    );
+  }
+
+  async deleteEmployee(employeeId: string) {
+    await this.request<{ deleted: boolean }>(
+      `/api/org/employees/${encodeURIComponent(employeeId)}`,
+      { method: "DELETE" }
+    );
+  }
+
+  async deleteCompany(companyId: string) {
+    await this.request<{ deleted: boolean }>(
+      `/api/org/companies/${encodeURIComponent(companyId)}`,
+      { method: "DELETE" }
+    );
+  }
+
   searchBdLeads(query: string, limit = 10) {
     return this.request<BdLead[]>("/api/bd/search", {
       body: JSON.stringify({ query, limit }),
@@ -245,6 +562,96 @@ export class ApiClient implements RecruitmentApi {
     });
   }
 
+  runBdAgent(query: string, kind = "text", limit = 10) {
+    return this.request<BdAgentQueryResult>("/api/bd/agent/query", {
+      body: JSON.stringify({ query, kind, limit }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  async runBdAgentStream(
+    query: string,
+    kind = "text",
+    limit = 10,
+    onProgress?: (progress: BdProgress) => void
+  ) {
+    const headers = new Headers();
+    headers.set("X-Kerui-Session", this.sessionToken);
+    headers.set("Content-Type", "application/json");
+    const response = await this.fetcher(`${this.baseUrl}/api/bd/agent/query-stream`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query, kind, limit })
+    });
+    if (!response.ok) throw new Error("检索失败");
+    if (!response.body) throw new Error("浏览器不支持流式响应");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: BdAgentQueryResult | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        const data = JSON.parse(raw) as
+          | (BdProgress & { type: "progress" })
+          | (BdAgentQueryResult & { type: "result" });
+        if (data.type === "progress" && onProgress) {
+          onProgress({ stage: data.stage, message: data.message });
+        } else if (data.type === "result") {
+          result = data as BdAgentQueryResult;
+        }
+      }
+    }
+
+    if (!result) throw new Error("未收到检索结果");
+    return result;
+  }
+
+  followUpBdAgent(sessionId: string, query: string, limit = 10) {
+    return this.request<BdAgentQueryResult>(
+      `/api/bd/agent/session/${encodeURIComponent(sessionId)}/follow-up`,
+      {
+        body: JSON.stringify({ query, limit }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  indexStatus() {
+    return this.request<IndexSyncStatus>("/api/search/index-status");
+  }
+
+  retryIndexSync() {
+    return this.request<IndexSyncStatus>("/api/search/index-retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  }
+
+  getResumeReview(revisionId: string) {
+    return this.request<ResumeReview>(`/api/resumes/revisions/${encodeURIComponent(revisionId)}/review`);
+  }
+
+  approveResumeReview(revisionId: string, fields: Record<string, unknown>) {
+    return this.request<ResumeReview>(`/api/resumes/revisions/${encodeURIComponent(revisionId)}/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fields }),
+    });
+  }
+
   createCase(candidateId: string, jdId: string) {
     return this.request<CaseItem>("/api/case", {
       body: JSON.stringify({ candidate_id: candidateId, jd_id: jdId }),
@@ -253,39 +660,99 @@ export class ApiClient implements RecruitmentApi {
     });
   }
 
-  listCases(candidateId?: string) {
-    const query = candidateId ? `?candidate_id=${encodeURIComponent(candidateId)}` : "";
-    return this.request<CaseItem[]>(`/api/case${query}`);
+  listCases(candidateId?: string, jdId?: string) {
+    const query = new URLSearchParams();
+    if (candidateId) query.set("candidate_id", candidateId);
+    if (jdId) query.set("jd_id", jdId);
+    return this.request<CaseItem[]>(`/api/case${query.size ? `?${query}` : ""}`);
   }
 
-  advanceCase(caseId: string, stage: string, note?: string) {
-    return this.request<CaseItem>(`/api/case/${encodeURIComponent(caseId)}/advance`, {
-      body: JSON.stringify({ stage, note }),
+  getCase(caseId: string) {
+    return this.request<CaseDetail>(`/api/case/${encodeURIComponent(caseId)}`);
+  }
+
+  recommendCase(caseId: string, payload: CaseActionInput = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/recommend`, {
+      body: JSON.stringify(payload),
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
   }
 
-  undoCase(caseId: string) {
-    return this.request<CaseItem>(`/api/case/${encodeURIComponent(caseId)}/undo`, {
+  enterInterview(caseId: string, payload: CaseActionInput & { round_name?: string; round_type?: string } = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/enter-interview`, {
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
       method: "POST"
     });
   }
 
-  getCaseEvents(caseId: string) {
-    return this.request<StageEventItem[]>(
-      `/api/case/${encodeURIComponent(caseId)}/events`
+  recordResult(caseId: string, caseRoundId: string, result: string, payload: CaseActionInput = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/result`, {
+      body: JSON.stringify({ ...payload, case_round_id: caseRoundId, result }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  passAndAdvance(caseId: string, caseRoundId: string, payload: CaseActionInput & { next_round_name?: string } = {}) {
+    return this.request<CaseEventItem[]>(`/api/case/${encodeURIComponent(caseId)}/pass-and-advance`, {
+      body: JSON.stringify({ ...payload, case_round_id: caseRoundId }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  offerCase(caseId: string, payload: CaseActionInput = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/offer`, {
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  onboardCase(caseId: string, payload: CaseActionInput = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/onboard`, {
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  exitCase(caseId: string, result?: string, payload: CaseActionInput = {}) {
+    return this.request<CaseEventItem>(`/api/case/${encodeURIComponent(caseId)}/exit`, {
+      body: JSON.stringify({ ...payload, result: result ?? null }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  voidEvent(eventId: string, payload: CaseActionInput = {}) {
+    return this.request<{ deleted: string }>(`/api/case/event/${encodeURIComponent(eventId)}/void`, {
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  dashboardOverview(filters?: DashboardQuery) {
+    return this.request<DashboardOverview>(`/api/dashboard/overview${_dashQuery(filters)}`);
+  }
+
+  dashboardByJd(filters?: DashboardQuery) {
+    return this.request<DashboardByJd[]>(`/api/dashboard/by-jd${_dashQuery(filters)}`);
+  }
+
+  dashboardTrend(granularity: string, filters?: DashboardQuery) {
+    const base = `/api/dashboard/trend?granularity=${encodeURIComponent(granularity)}`;
+    const extra = _dashQuery(filters);
+    return this.request<DashboardTrendItem[]>(
+      extra ? `${base}&${extra.slice(1)}` : base
     );
   }
 
-  dashboardOverview() {
-    return this.request<DashboardOverview>("/api/dashboard/overview");
-  }
-
-  dashboardByJd() {
-    return this.request<{ jd_id: string; company: string; title: string; stage_counts: Record<string, number> }[]>(
-      "/api/dashboard/by-jd"
-    );
+  async dashboardExport(filters?: DashboardQuery) {
+    await this.download(`/api/dashboard/export${_dashQuery(filters)}`, "dashboard.xlsx");
   }
 
   reverseMatch(candidateId: string) {
@@ -305,6 +772,17 @@ export class ApiClient implements RecruitmentApi {
       `/api/resumes/candidate/${encodeURIComponent(candidateId)}/contact`,
       {
         body: JSON.stringify(input),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
+    );
+  }
+
+  updateCandidateField(candidateId: string, field: string, value: unknown) {
+    return this.request<{ candidate_id: string; revision_id: string; field: string; value: unknown }>(
+      `/api/resumes/candidate/${encodeURIComponent(candidateId)}/field`,
+      {
+        body: JSON.stringify({ field, value }),
         headers: { "Content-Type": "application/json" },
         method: "PUT"
       }
@@ -440,7 +918,7 @@ export class ApiClient implements RecruitmentApi {
   }
 
   restoreBackup(filename: string) {
-    return this.request<{ restored_from: string; safety_backup: string }>(
+    return this.request<{ restored_from: string; safety_backup: string; restart_required?: boolean; status?: string }>(
       `/api/backup/restore/${encodeURIComponent(filename)}`,
       { method: "POST" }
     );
@@ -469,7 +947,7 @@ export class ApiClient implements RecruitmentApi {
     return this.request<ReminderItem[]>("/api/reminders");
   }
 
-  createReminder(input: { title: string; remind_at: string; note?: string }) {
+  createReminder(input: CreateReminderInput) {
     return this.request<ReminderItem>("/api/reminders", {
       body: JSON.stringify(input),
       headers: { "Content-Type": "application/json" },
@@ -502,12 +980,20 @@ export class ApiClient implements RecruitmentApi {
     const response = await this.fetcher(`${this.baseUrl}${path}`, { headers });
     if (!response.ok) throw new Error("导出失败");
     const blob = await response.blob();
+    this.triggerDownload(blob, filename);
+  }
+
+  private triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = filename;
+    document.body.appendChild(anchor);
     anchor.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(anchor);
+    // 用户选择「另存为」目录时原生对话框可能停留较久，blob URL 需在此期间保持有效，
+    // 过早 revoke 会导致浏览器报「无法下载，没有权限」。延长到 60 秒再释放。
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -516,7 +1002,11 @@ export class ApiClient implements RecruitmentApi {
     const response = await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers });
     const payload = await response.json() as T | ApiError;
     if (!response.ok) {
-      throw new Error((payload as ApiError).message ?? "本机服务请求失败，请稍后重试");
+      const apiError = payload as ApiError;
+      throw new ApiRequestError(
+        apiError.message ?? apiError.detail ?? "本机服务请求失败，请稍后重试",
+        response.status,
+      );
     }
     return payload as T;
   }

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ class CreateReminderRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     remind_at: datetime
     note: str | None = None
+    case_id: str | None = None
 
 
 class ReminderResponse(BaseModel):
@@ -22,6 +23,8 @@ class ReminderResponse(BaseModel):
     remind_at: str
     dismissed: bool
     dismissed_at: str | None
+    case_id: str | None = None
+    paused_by_workflow: bool = False
 
 
 @router.get("", response_model=list[ReminderResponse])
@@ -43,6 +46,7 @@ def create_reminder(command: CreateReminderRequest, request: Request) -> Reminde
         title=command.title,
         remind_at=command.remind_at,
         note=command.note,
+        case_id=command.case_id,
     )
     return _reminder_to_response(reminder)
 
@@ -54,11 +58,15 @@ def dismiss_reminder(reminder_id: str, request: Request) -> ReminderResponse:
 
 
 def _reminder_to_response(r) -> ReminderResponse:
+    reminder_zone = timezone(timedelta(hours=8)) if r.time_basis == "LEGACY_SHANGHAI" else timezone.utc
     return ReminderResponse(
         id=r.id,
         title=r.title,
         note=r.note,
-        remind_at=r.remind_at.isoformat(),
+        remind_at=(r.remind_at.replace(tzinfo=reminder_zone) if r.remind_at.tzinfo is None else r.remind_at).isoformat(),
         dismissed=r.dismissed,
-        dismissed_at=r.dismissed_at.isoformat() if r.dismissed_at else None,
+        dismissed_at=((r.dismissed_at.replace(tzinfo=timezone.utc) if r.dismissed_at.tzinfo is None else r.dismissed_at).isoformat()
+                      if r.dismissed_at else None),
+        case_id=r.case_id,
+        paused_by_workflow=r.paused_by_workflow,
     )

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.backup.service import BackupService
-from kerui_recruit.db.models import Candidate, CandidateJobCase, Jd, JdRevision
 from kerui_recruit.mail.ingest import MailIngestService
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.reminders.mail_service import ReminderMailService
@@ -26,12 +25,12 @@ class ReverseMatch:
 
 
 class SchedulerService:
-    """Background automation: reverse matching, reminder checks and mail polling.
+    """Background automation: reminder checks and mail polling.
 
     Runs a lightweight periodic loop (no external scheduler dependency) that
-    reverse-matches freshly available candidates against open JDs, surfaces due
-    reminders and ingests resumes from the agent mailbox. Individual jobs never
-    crash the loop.
+    surfaces due reminders and ingests resumes from the agent mailbox. Passive
+    matching is triggered on ingest instead of by this loop. Individual jobs
+    never crash the loop.
     """
 
     def __init__(
@@ -44,6 +43,7 @@ class SchedulerService:
         reminder_mail_service: ReminderMailService | None = None,
         backup_service: BackupService | None = None,
         soft_delete_service: SoftDeleteService | None = None,
+        sender_domains: set[str] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
@@ -52,69 +52,27 @@ class SchedulerService:
         self.reminder_mail_service = reminder_mail_service
         self.backup_service = backup_service
         self.soft_delete_service = soft_delete_service
+        self.sender_domains = sender_domains
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20
     ) -> list[ReverseMatch]:
         if self.match_service is None:
             return []
-
-        with self.session_factory() as session:
-            rows = session.execute(
-                select(JdRevision, Jd.company, Jd.title)
-                .join(Jd, Jd.id == JdRevision.jd_id)
-                .where(
-                    Jd.status == "OPEN",
-                    Jd.deleted_at.is_(None),
-                    JdRevision.is_current.is_(True),
-                )
-            ).all()
-
-        matches: list[ReverseMatch] = []
-        for revision, company, title in rows:
-            page = await self.match_service.match_jd(
-                revision_id=revision.id,
-                limit=limit,
+        records = await self.match_service.reverse_match_candidate(
+            candidate_id, limit=limit
+        )
+        return [
+            ReverseMatch(
+                jd_id=record.jd_id,
+                revision_id=record.revision_id,
+                company=record.company,
+                title=record.title,
+                score=(record.score.total if record.score is not None
+                       else self.match_service.score(record.revision_id, record.hit).total),
             )
-            for hit in page.items:
-                if hit.candidate_id == candidate_id:
-                    matches.append(
-                        ReverseMatch(
-                            jd_id=revision.jd_id,
-                            revision_id=revision.id,
-                            company=company,
-                            title=title,
-                            score=hit.score,
-                        )
-                    )
-                    break
-        return sorted(matches, key=lambda m: m.score, reverse=True)
-
-    async def reverse_match_available(self) -> dict[str, list[ReverseMatch]]:
-        """Reverse-match AVAILABLE candidates that have no open case yet."""
-        with self.session_factory() as session:
-            candidates = session.scalars(
-                select(Candidate).where(
-                    Candidate.status == "AVAILABLE",
-                    Candidate.deleted_at.is_(None),
-                )
-            ).all()
-            cased_candidate_ids = set(
-                session.scalars(
-                    select(CandidateJobCase.candidate_id).where(
-                        CandidateJobCase.deleted_at.is_(None)
-                    )
-                ).all()
-            )
-
-        results: dict[str, list[ReverseMatch]] = {}
-        for candidate in candidates:
-            if candidate.id in cased_candidate_ids:
-                continue
-            matches = await self.reverse_match_candidate(candidate.id)
-            if matches:
-                results[candidate.id] = matches
-        return results
+            for record in records
+        ]
 
     def due_reminders(self) -> list:
         if self.reminder_service is None:
@@ -125,7 +83,7 @@ class SchedulerService:
         """Ingest resumes from the agent mailbox. Returns new revision ids."""
         if self.mail_ingest_service is None:
             return []
-        return self.mail_ingest_service.poll_and_ingest()
+        return self.mail_ingest_service.poll_and_ingest(sender_domains=self.sender_domains)
 
     def send_reminder_mail(self) -> list[str]:
         """Send due reminders as email. Returns sent reminder ids."""
@@ -156,25 +114,20 @@ class SchedulerService:
 
     async def run_forever(self, *, interval_seconds: int = 300) -> None:
         while True:
-            try:
-                await self.reverse_match_available()
-            except Exception:
-                # A single failed tick must not stop background automation.
-                pass
-            try:
-                self.poll_mail()
-            except Exception:
-                pass
-            try:
-                self.send_reminder_mail()
-            except Exception:
-                pass
-            try:
-                self.backup_tick()
-            except Exception:
-                pass
-            try:
-                self.purge_recycle_bin()
-            except Exception:
-                pass
+            for name, operation in (
+                ("mail_ingest", self.poll_mail),
+                ("reminder_mail", self.send_reminder_mail),
+                ("backup", self.backup_tick),
+                ("recycle_bin", self.purge_recycle_bin),
+            ):
+                try:
+                    # IMAP/SMTP, SQLite backup and filesystem deletion are all
+                    # blocking integrations. Keep them off FastAPI's event loop.
+                    await asyncio.to_thread(operation)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    logging.getLogger(__name__).warning(
+                        "Scheduler job %s failed: %s", name, type(error).__name__
+                    )
             await asyncio.sleep(interval_seconds)

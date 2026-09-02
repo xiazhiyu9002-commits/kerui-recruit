@@ -60,7 +60,7 @@ def build_providers(settings: Settings) -> ProviderBundle:
             api_key=settings.deepseek_api_key.get_secret_value(),
             client=client,
             base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            model=settings.deepseek_vision_model,
         )
 
     parser: ResumeParser

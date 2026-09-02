@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Jd, JdRevision
 from kerui_recruit.db.session import create_engine_for
+from kerui_recruit.jd.extract import split_jd_text
 from kerui_recruit.jd.ingest import JdIngestService, IngestJd, JdIngestResult
 from kerui_recruit.jd.pipeline import JdPipeline
 from kerui_recruit.providers.local import LocalJdParser
@@ -28,8 +29,17 @@ def test_ingest_creates_jd_and_revision(session_factory: sessionmaker[Session]) 
         assert isinstance(result, JdIngestResult)
         jd = session.scalars(select(Jd)).one()
         assert jd.company == "某金融科技"
-        assert jd.status == "DRAFT"
+        assert jd.status == "OPEN"
         assert jd.revisions[0].status == "PENDING"
+
+
+def test_split_jd_text_splits_headers_and_falls_back() -> None:
+    text = "岗位1：Java后端\n要求 Java 3年\n\n岗位2：算法工程师\n要求 Python"
+    assert split_jd_text(text) == [
+        "岗位1：Java后端\n要求 Java 3年",
+        "岗位2：算法工程师\n要求 Python",
+    ]
+    assert split_jd_text("Java 后端工程师 3年 本科") == ["Java 后端工程师 3年 本科"]
 
 
 @pytest.mark.asyncio

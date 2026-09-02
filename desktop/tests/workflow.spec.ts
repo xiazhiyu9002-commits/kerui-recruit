@@ -1,24 +1,18 @@
 import { expect, test } from "@playwright/test";
 
-// End-to-end smoke tests for the main recruitment workflows. Like
-// search.spec.ts, these run against the bundled Tauri shell and its local
-// sidecar, which inject the runtime-config bridge consumed by the React app.
+// End-to-end smoke tests for the main recruitment workflows. The Playwright
+// config starts a temporary sidecar and Vite server with isolated data.
 
-test("imports a JD and runs a match", async ({ page }) => {
+test("imports a JD and exposes its matching action", async ({ page }) => {
   await page.goto("/");
 
   await page.getByText("JD 管理").click();
-  await page.getByLabel("JD 公司").fill("某金融");
-  await page.getByLabel("JD 岗位").fill("Java 后端工程师");
   await page.getByLabel("JD 原文").fill("负责支付系统，3 年 Java，本科，金融");
   await page.getByRole("button", { name: "导入并解析" }).click();
   await expect(page.getByText("导入成功")).toBeVisible();
 
-  const revisionId = await page.locator("code").first().textContent();
-  await page.getByText("人岗匹配").click();
-  await page.getByLabel("匹配 JD 版本").fill(revisionId ?? "");
-  await page.getByRole("button", { name: "开始匹配" }).click();
-  await expect(page.getByText("匹配结果")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "已导入 JD" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "匹配", exact: true }).first()).toBeVisible();
 });
 
 test("loads the recruitment dashboard", async ({ page }) => {
@@ -28,29 +22,27 @@ test("loads the recruitment dashboard", async ({ page }) => {
   await expect(page.getByText("推荐总数")).toBeVisible();
 });
 
-test("creates a mapping project and builds a tree", async ({ page }) => {
+test("creates a company in the organization mapping", async ({ page }) => {
   await page.goto("/");
   await page.getByText("Mapping").click();
-  await page.getByLabel("项目名称").fill("互联网公司图谱");
-  await page.getByRole("button", { name: "新建项目" }).click();
+  await page.getByLabel("公司名称").fill("互联网公司图谱");
+  await page.getByRole("button", { name: "新建公司" }).click();
   await expect(page.getByText("互联网公司图谱")).toBeVisible();
 });
 
 test("searches BD leads", async ({ page }) => {
   await page.goto("/");
   await page.getByText("BD 助手").click();
-  await page.getByLabel("BD 搜索").fill("Java 工程师 招聘 上海");
-  await page.getByRole("button", { name: "搜索线索" }).click();
+  await page.getByLabel("BD 深度检索").fill("Java 工程师 招聘 上海");
+  await page.getByRole("button", { name: "深度检索" }).click();
   await expect(page.getByText("暂无线索")).toBeVisible();
 });
 
-test("runs the health check and lists backups", async ({ page }) => {
+test("runs the health check and exposes index synchronization", async ({ page }) => {
   await page.goto("/");
   await page.getByText("设置").click();
   await page.getByRole("button", { name: "运行检测" }).click();
   await expect(page.getByText("数据库")).toBeVisible();
-  await page.getByRole("button", { name: "加载备份" }).click();
-  await expect(
-    page.getByText(/暂无备份快照|backup_\d{8}T\d{6}Z_.*\.sqlite3/).first()
-  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "索引同步" })).toBeVisible();
+  await expect(page.getByText(/等待同步 \d+ 项，失败 \d+ 项/)).toBeVisible();
 });

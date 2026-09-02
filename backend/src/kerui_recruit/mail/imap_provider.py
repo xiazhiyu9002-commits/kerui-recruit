@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+from email.header import decode_header, make_header
 from email.message import Message
 from typing import Iterable
 
@@ -90,7 +91,7 @@ def _parse_message(uid: int, raw: bytes) -> MailMessage:
     body_parts: list[str] = []
     for part in msg.walk():
         content_disposition = part.get_content_disposition()
-        filename = part.get_filename()
+        filename = _decode_filename(part.get_filename())
         if filename and _is_resume(filename):
             payload = part.get_payload(decode=True)
             if isinstance(payload, bytes):
@@ -108,6 +109,16 @@ def _parse_message(uid: int, raw: bytes) -> MailMessage:
         date=date,
         attachments=tuple(attachments),
     )
+
+
+def _decode_filename(filename: str | None) -> str:
+    """解码 RFC 2047 编码的中文附件名（QQ 邮箱常把文件名编码成 =?utf-8?B?...?=）。"""
+    if not filename:
+        return ""
+    try:
+        return str(make_header(decode_header(filename)))
+    except Exception:
+        return filename
 
 
 def _is_resume(filename: str) -> bool:

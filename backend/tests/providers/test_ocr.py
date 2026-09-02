@@ -22,7 +22,22 @@ def _blank_pdf_bytes() -> bytes:
 def test_rasterize_pdf_returns_one_png_per_page() -> None:
     images = rasterize_pdf(_blank_pdf_bytes())
     assert len(images) == 1
-    assert images[0].startswith(b"\x89PNG")
+    assert images[0][0] == 0
+    assert images[0][1].startswith(b"\x89PNG")
+
+
+def test_rasterize_pdf_supports_page_selection() -> None:
+    document = pymupdf.open()
+    document.new_page()
+    document.new_page()
+    document.new_page()
+    payload = document.tobytes()
+    document.close()
+
+    images = rasterize_pdf(payload, page_indexes=[0, 2])
+
+    assert [index for index, _ in images] == [0, 2]
+    assert all(data.startswith(b"\x89PNG") for _, data in images)
 
 
 @pytest.mark.asyncio

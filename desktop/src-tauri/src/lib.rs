@@ -252,7 +252,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&show, &quit])?;
     TrayIconBuilder::with_id("main-tray")
         .icon(icon.clone())
-        .tooltip("科锐人才库")
+        .tooltip("人才库")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {

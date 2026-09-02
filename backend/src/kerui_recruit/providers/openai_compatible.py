@@ -29,6 +29,7 @@ class OpenAICompatibleClient:
         self,
         messages: list[dict[str, str]],
         response_model: type[ResultModel],
+        temperature: float = 0.0,
     ) -> ResultModel:
         try:
             response = await self.http_client.post(
@@ -38,7 +39,7 @@ class OpenAICompatibleClient:
                     "model": self.model,
                     "messages": messages,
                     "response_format": {"type": "json_object"},
-                    "temperature": 0,
+                    "temperature": temperature,
                 },
                 timeout=httpx.Timeout(60.0, connect=10.0),
             )

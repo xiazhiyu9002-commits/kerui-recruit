@@ -15,16 +15,28 @@ class NullWebSearchProvider(WebSearchProvider):
         return []
 
 
-# Recruitment aggregator sites list jobs from many companies but rarely name a
-# single company on the page, which defeats company extraction. Excluding them
-# biases results toward company career pages with rich, single-company content.
-_AGGREGATOR_DOMAINS = [
-    "bosszhipin.com",
-    "zhipin.com",
-    "liepin.com",
-    "51job.com",
-    "lagou.com",
-    "zhilian.com",
+# Low-value sources: news, media, blogs and portals rarely describe a single
+# open role, so they pollute BD lead discovery. Excluding them biases results
+# toward recruitment platforms and company career pages.
+_LOW_QUALITY_DOMAINS = [
+    "zhihu.com",
+    "sohu.com",
+    "sina.com.cn",
+    "163.com",
+    "qq.com",
+    "ifeng.com",
+    "thepaper.cn",
+    "36kr.com",
+    "leiphone.com",
+    "ithome.com",
+    "csdn.net",
+    "juejin.cn",
+    "cnblogs.com",
+    "segmentfault.com",
+    "medium.com",
+    "gov.cn",
+    "weixin.qq.com",
+    "baijiahao.baidu.com",
 ]
 
 
@@ -46,7 +58,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
         self.base_url = base_url.rstrip("/")
         self._client = client
         self.exclude_domains = (
-            exclude_domains if exclude_domains is not None else list(_AGGREGATOR_DOMAINS)
+            exclude_domains if exclude_domains is not None else list(_LOW_QUALITY_DOMAINS)
         )
 
     def search(self, query: str, limit: int = 10) -> list[WebSearchResult]:

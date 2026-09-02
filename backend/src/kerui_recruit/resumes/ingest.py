@@ -28,6 +28,7 @@ class IngestResume:
     display_name: str | None = None
     candidate_id: str | None = None
     queue_name: str = "batch"
+    passive_match: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,10 @@ class ResumeIngestService:
                 task_type="PARSE_RESUME",
                 queue_name=command.queue_name,
                 priority=10,
-                payload={"revision_id": revision.id},
+                payload={
+                    "revision_id": revision.id,
+                    "passive_match": command.passive_match,
+                },
                 idempotency_key=f"PARSE_RESUME:{revision.id}:v1",
             )
             self.session.add(task)

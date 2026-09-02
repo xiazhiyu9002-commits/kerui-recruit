@@ -16,15 +16,76 @@ class SearchChunk:
     location: str | None
     candidate_status: str
     qs_rank: int | None = None
+    school_level: str | None = None
+    preferred_location: str | None = None
+    preferred_locations: tuple[str, ...] = ()
+
+
+# 学历层级：低 -> 高。用于「本科及以上」这类包含式条件。
+DEGREE_ORDER = ("ASSOCIATE", "BACHELOR", "MASTER", "DOCTORATE")
+
+# 学校等级的重叠关系：985 也是 211，211 也是双一流。
+# 要求「211」时应命中 985 与 211；要求「双一流」时命中全部三档。
+SCHOOL_LEVEL_EXPAND = {
+    "985": ("985",),
+    "211": ("211", "985"),
+    "双一流": ("双一流", "211", "985"),
+    "海外": ("海外",),
+    "普通": ("普通",),
+}
+
+
+def degrees_at_least(degree: str | None) -> tuple[str, ...]:
+    """Return the degrees that satisfy a minimum-degree condition."""
+    if degree is None:
+        return ()
+    if degree not in DEGREE_ORDER:
+        return (degree,)
+    idx = DEGREE_ORDER.index(degree)
+    return tuple(DEGREE_ORDER[idx:])
+
+
+def school_levels_at_least(level: str | None) -> tuple[str, ...]:
+    """Return the school-level values that satisfy a level condition."""
+    if level is None:
+        return ()
+    return SCHOOL_LEVEL_EXPAND.get(level, (level,))
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateFilters:
     min_years: float | None = None
-    highest_degree: str | None = None
-    location: str | None = None
+    max_years: float | None = None
+    highest_degree: str | None = None  # 语义：最低学历层级
+    degree_exact: bool = False  # True 表示「仅该学历」精确限定
+    location: str | None = None  # 单值现居地（向后兼容）
+    locations: tuple[str, ...] = ()  # 多值现居地（或关系）
+    preferred_location: str | None = None  # 求职意向地（单值，向后兼容）
+    preferred_locations: tuple[str, ...] = ()  # 多值求职意向地（或关系）
     candidate_status: str | None = "AVAILABLE"
     max_qs_rank: int | None = None
+    school_level: str | None = None  # 语义：最低学校等级层级
+    exclude_skills: tuple[str, ...] = ()  # 排除技能（召回后硬过滤）
+
+    def degree_values(self) -> tuple[str, ...]:
+        if self.highest_degree is None:
+            return ()
+        if self.degree_exact:
+            return (self.highest_degree,)
+        return degrees_at_least(self.highest_degree)
+
+    def school_level_values(self) -> tuple[str, ...]:
+        return school_levels_at_least(self.school_level)
+
+    def location_values(self) -> tuple[str, ...]:
+        values = [self.location] if self.location else []
+        values.extend(self.locations)
+        return tuple(dict.fromkeys(v for v in values if v))
+
+    def preferred_location_values(self) -> tuple[str, ...]:
+        values = [self.preferred_location] if self.preferred_location else []
+        values.extend(self.preferred_locations)
+        return tuple(dict.fromkeys(v for v in values if v))
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +108,16 @@ class SearchHit:
     highest_degree: str | None
     location: str | None
     qs_rank: int | None = None
+    rerank_score: float | None = None  # 重排分（0~1 或原始），与召回分分离
+    verified_exclusions: tuple[str, ...] = ()  # Complete index evidence already checked during recall.
 
 
 @dataclass(frozen=True, slots=True)
 class SearchPage:
     items: tuple[SearchHit, ...]
     degraded_reasons: tuple[str, ...] = ()
+    # 区分空结果的根因：no_match（真的没有）/ index_not_ready / service_error
+    empty_reason: str | None = None
 
 
 class SearchIndex(Protocol):

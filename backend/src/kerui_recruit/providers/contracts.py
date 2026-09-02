@@ -15,3 +15,7 @@ class RerankerProvider(Protocol):
 
 class OCRProvider(Protocol):
     async def extract(self, content: bytes, filename: str) -> str: ...
+
+    async def extract_pages(
+        self, content: bytes, filename: str, page_indexes: list[int]
+    ) -> list[str]: ...

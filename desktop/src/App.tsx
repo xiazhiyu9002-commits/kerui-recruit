@@ -1,6 +1,55 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Fragment, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 
 import "./styles.css";
+import "./cases/workflow.css";
+import { OrgMindMap } from "./org/OrgMindMap";
+import { OrgDetailPanel } from "./org/OrgDetailPanel";
+import { CaseDrawer } from "./cases/CaseDrawer";
+import { ResumeReviewDrawer } from "./resumes/ResumeReviewDrawer";
+import { IndexSyncPanel } from "./search/IndexSyncPanel";
+import { RemindersPanel } from "./cases/RemindersPanel";
+
+
+function exportSvgAsPng(svg: SVGSVGElement, filename: string) {
+  const width = svg.width.baseVal.value || svg.viewBox.baseVal.width || 800;
+  const height = svg.height.baseVal.value || svg.viewBox.baseVal.height || 400;
+  const scale = 3; // 3 倍分辨率导出，保证文字清晰
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("width", String(width * scale));
+  clone.setAttribute("height", String(height * scale));
+  const xml = new XMLSerializer().serializeToString(clone);
+  const svgBlob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    }, "image/png");
+  };
+  image.onerror = () => URL.revokeObjectURL(url);
+  image.src = url;
+}
 
 
 export interface ImportedResume {
@@ -24,6 +73,10 @@ export type TaskAction = "cancel" | "retry" | "pause" | "resume";
 export interface CandidateSearchItem {
   candidate_id: string;
   revision_id: string;
+  name: string;
+  phone: string | null;
+  reasons: string[];
+  parsed_data: ParsedResumeData | null;
   content: string;
   score: number;
   matched_channels: string[];
@@ -31,11 +84,40 @@ export interface CandidateSearchItem {
   highest_degree: string | null;
   location: string | null;
   result_id?: string | null;
+  original_filename?: string | null;
 }
 
 export interface CandidateSearchResult {
   items: CandidateSearchItem[];
   degraded_reasons: string[];
+  empty_reason?: string | null;
+}
+
+export interface CandidateSearchFilters {
+  min_years?: number; max_years?: number; highest_degree?: string;
+  degree_exact?: boolean; locations?: string[]; preferred_locations?: string[];
+  candidate_status?: string; max_qs_rank?: number; school_level?: string;
+  exclude_skills?: string[];
+}
+
+export interface CandidateListItem {
+  candidate_id: string;
+  revision_id: string;
+  display_name: string;
+  total_years: number | null;
+  highest_degree: string | null;
+  location: string | null;
+  status: string;
+  revision_status: string | null;
+  phone: string | null;
+  original_filename: string | null;
+  parsed_data: ParsedResumeData | null;
+  error_code?: string | null;
+  error_message?: string | null;
+}
+
+export interface CandidatePage {
+  items: CandidateListItem[]; total: number; page: number; page_size: number; has_more: boolean;
 }
 
 export interface CandidateContact {
@@ -52,11 +134,104 @@ export interface ResumeRevision {
   status: string;
   is_current: boolean;
   created_at: string;
+  parsed_data: ParsedResumeData | null;
+}
+
+export interface ParsedExperienceData {
+  company: string | null;
+  title: string | null;
+  summary: string;
+  industry?: string | null;
+}
+
+export interface ParsedProjectData {
+  name: string | null;
+  summary: string;
+  tech_stack?: string | null;
+  business_scene?: string | null;
+}
+
+export interface ParsedResumeData {
+  name?: string | null;
+  total_years?: number | null;
+  highest_degree?: string | null;
+  location?: string | null;
+  preferred_location?: string | null;
+  school?: string | null;
+  school_level?: string | null;
+  qs_rank?: number | null;
+  graduation_year?: number | null;
+  birth_year?: number | null;
+  age?: number | null;
+  industry?: string | null;
+  current_industry?: string | null;
+  longest_industry?: string | null;
+  tech_direction?: string[];
+  business_direction?: string[];
+  skills?: string[];
+  summary?: string;
+  experiences?: ParsedExperienceData[];
+  projects?: ParsedProjectData[];
+}
+
+export interface IndexSyncStatus {
+  pending: number;
+  failed: number;
+  items: { entity_type: string; entity_id: string; status: string; attempts: number; error: string | null }[];
+  indexes?: { entity_type: string; compatible: boolean; error: string | null }[];
+}
+
+export interface ResumeReview {
+  revision_id: string;
+  status: string;
+  review_required: boolean;
+  raw_text: string | null;
+  parsed_data: ParsedResumeData | null;
+  review_data: ParsedResumeData | null;
+  manual_overrides: Record<string, unknown> | null;
+  extraction_diagnostics: Record<string, unknown> | null;
+  error_code: string | null;
+  error_message: string | null;
 }
 
 export interface ImportedJd {
   jd_id: string;
   revision_id: string;
+}
+
+export interface JdParsedData {
+  title?: string;
+  company?: string;
+  department?: string | null;
+  location?: string | null;
+  salary?: string | null;
+  ai_category?: string | null;
+  tech_direction?: string[];
+  business_direction?: string[];
+  industry?: string | null;
+  min_years?: number | null;
+  highest_degree?: string | null;
+  qs_level?: string | null;
+  core_duties?: string[];
+  required_skills?: string[];
+  plus_industry?: string[];
+  plus_project_types?: string[];
+  summary?: string;
+  requirements?: { kind: string; label: string; value: string }[];
+}
+
+export interface JdListItem {
+  jd_id: string;
+  revision_id: string;
+  company: string;
+  title: string;
+  status: string;
+  jd_status: string;
+  ai_category: string | null;
+  location: string | null;
+  min_years: number | null;
+  parsed_data: JdParsedData | null;
+  source_text: string | null;
 }
 
 export interface MatchRun {
@@ -70,7 +245,47 @@ export interface BatchMatchResult {
   items: CandidateSearchItem[];
 }
 
-export type MatchMarkStatus = "未处理" | "保留" | "短名单" | "排除";
+export type MatchMarkStatus = "未处理" | "保留";
+
+export interface MatchResultItem {
+  result_id: string;
+  candidate_id: string;
+  name: string;
+  score: number;
+  status: MatchMarkStatus;
+  total_years: number | null;
+  highest_degree: string | null;
+  location: string | null;
+}
+
+export interface MatchResultGroup {
+  jd_id: string;
+  revision_id: string;
+  company: string;
+  title: string;
+  items: MatchResultItem[];
+}
+
+export type JdStatus = "OPEN" | "FILLED" | "CANCELLED";
+
+export interface MatchCandidateItem {
+  result_id: string;
+  jd_id: string;
+  revision_id: string;
+  company: string;
+  title: string;
+  score: number;
+  status: MatchMarkStatus;
+  case_id: string | null;
+  jd_status: string;
+  ai_category: string | null;
+  parsed_data: JdParsedData | null;
+  source_text: string | null;
+}
+
+export type MatchDrawerState =
+  | { mode: "candidates"; title: string; items: CandidateSearchItem[]; statuses: Record<string, MatchMarkStatus> }
+  | { mode: "jds"; title: string; items: MatchCandidateItem[]; statuses: Record<string, MatchMarkStatus> };
 
 export interface DiagnosticsData {
   sqlite_version: string;
@@ -99,6 +314,89 @@ export interface MappingTreeNode {
   children: MappingTreeNode[];
 }
 
+export interface OrgCompany {
+  id: string;
+  name: string;
+}
+
+export interface OrgDepartment {
+  id: string;
+  company_id: string;
+  parent_id: string | null;
+  name: string;
+  leader_id: string | null;
+  leader_report_to: string | null;
+  team_size: number | null;
+  business_direction: string | null;
+  tech_stack: string | null;
+  office_location: string | null;
+  hc_status: string | null;
+  hc_internal_note: string | null;
+}
+
+export interface OrgEmployee {
+  id: string;
+  company_id: string;
+  department_id: string | null;
+  name: string;
+  title: string | null;
+  job_level: string | null;
+  report_to: string | null;
+  subordinate_count: number | null;
+  tenure_years: number | null;
+  business_module: string | null;
+  status: string | null;
+  intention: string | null;
+  remark: string | null;
+  contact: string | null;
+  is_key: boolean;
+}
+
+export interface CreateOrgDepartmentInput {
+  company_id: string;
+  name: string;
+  parent_id?: string | null;
+  leader_id?: string | null;
+  leader_report_to?: string | null;
+  team_size?: number | null;
+  business_direction?: string | null;
+  tech_stack?: string | null;
+  office_location?: string | null;
+  hc_status?: string | null;
+  hc_internal_note?: string | null;
+}
+
+export interface CreateOrgEmployeeInput {
+  company_id: string;
+  name: string;
+  department_id?: string | null;
+  title?: string | null;
+  job_level?: string | null;
+  report_to?: string | null;
+  subordinate_count?: number | null;
+  tenure_years?: number | null;
+  business_module?: string | null;
+  status?: string | null;
+  intention?: string | null;
+  remark?: string | null;
+  contact?: string | null;
+  is_key?: boolean;
+}
+
+export type UpdateOrgDepartmentInput = Partial<Omit<CreateOrgDepartmentInput, "company_id">>;
+export type UpdateOrgEmployeeInput = Partial<Omit<CreateOrgEmployeeInput, "company_id">>;
+
+export interface OrgTreeNode {
+  id: string;
+  kind: "company" | "department" | "employee";
+  name: string;
+  title: string | null;
+  job_level: string | null;
+  team_size: number | null;
+  is_key: boolean;
+  children: OrgTreeNode[];
+}
+
 export interface BdLead {
   id: string;
   source: string;
@@ -109,30 +407,130 @@ export interface BdLead {
   status: string;
 }
 
+export interface BdEvidenceItem {
+  claim: string | null;
+  quote: string | null;
+  source_url: string | null;
+}
+
+export interface BdAgentLead {
+  id: string;
+  source: string;
+  company_name: string;
+  job_title: string | null;
+  posted_time: string | null;
+  salary_range: string | null;
+  level: string | null;
+  requirements: string[];
+  summary: string | null;
+  url: string | null;
+  status: string;
+  confidence: number | null;
+  is_hiring: boolean | null;
+  evidence: BdEvidenceItem[];
+}
+
+export interface BdAgentQueryResult {
+  session_id: string;
+  leads: BdAgentLead[];
+}
+
+export interface BdProgress {
+  stage: string;
+  message: string;
+}
+
 export interface CaseItem {
   id: string;
   candidate_id: string;
   jd_id: string;
   stage: string;
   note: string | null;
+  candidate_name?: string | null;
+  company?: string | null;
+  jd_title?: string | null;
+  can_advance?: boolean;
+  blocked_reason?: string | null;
 }
 
-export interface StageEventItem {
+export interface CaseActionInput {
+  occurred_at?: string;
+  note?: string;
+  idempotency_key?: string;
+}
+
+export interface DashboardFilters {
+  company?: string;
+  jd_id?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export interface CaseRoundItem {
   id: string;
-  stage: string;
+  round_no: number;
+  round_name: string;
+  round_type: string | null;
+  skipped: boolean;
+}
+
+export interface CaseEventItem {
+  id: string;
+  event_type: string;
+  case_round_id: string | null;
+  round_name: string | null;
+  occurred_at: string;
+  recorded_at: string;
+  result: string | null;
   note: string | null;
+  status: string;
+}
+
+export interface CaseDetail extends CaseItem {
+  rounds: CaseRoundItem[];
+  events: CaseEventItem[];
+  process_rounds?: { round_no: number; round_name: string; round_type?: string | null }[];
+  template_version?: number | null;
 }
 
 export interface DashboardOverview {
   recommendation_total: number;
-  funnel: { stage: string; count: number }[];
-  health: {
-    candidate_total: number;
-    ready_total: number;
-    parse_failed: number;
-    recent_30d: number;
-    open_jd_total: number;
-  };
+  offer_total: number;
+  active_offer_total: number;
+  onboarded_total: number;
+  candidate_total: number;
+  monthly_new_candidates: { month: string; count: number }[];
+}
+
+export interface DashboardRound {
+  round_key?: string;
+  round_no: number;
+  round_name: string;
+  entered: number;
+  judged: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  skipped: number;
+  exited: number;
+  cancelled: number;
+  pass_rate: number | null;
+}
+
+export interface DashboardByJd {
+  jd_id: string;
+  company: string;
+  title: string;
+  recommendation_total: number;
+  offer_total: number;
+  final_offer_rate: number | null;
+  rounds: DashboardRound[];
+}
+
+export interface DashboardTrendItem {
+  period: string;
+  recommendation: number;
+  offer: number;
 }
 
 export interface ReverseMatchItem {
@@ -162,7 +560,6 @@ export interface CorrectionRecord {
 export interface AppSettings {
   deepseek_api_key?: string;
   deepseek_base_url?: string;
-  deepseek_model?: string;
   siliconflow_api_key?: string;
   siliconflow_base_url?: string;
   siliconflow_embedding_model?: string;
@@ -191,6 +588,15 @@ export interface ReminderItem {
   remind_at: string;
   dismissed: boolean;
   dismissed_at: string | null;
+  case_id?: string | null;
+  paused_by_workflow?: boolean;
+}
+
+export interface CreateReminderInput {
+  title: string;
+  remind_at: string;
+  note?: string;
+  case_id?: string | null;
 }
 
 export interface MigrationReport {
@@ -225,12 +631,31 @@ export interface RecruitmentApi {
   controlTask(taskId: string, action: TaskAction): Promise<TaskStatus>;
   listResumeRevisions(candidateId: string): Promise<ResumeRevision[]>;
   switchResumeRevision(revisionId: string): Promise<ResumeRevision>;
-  searchCandidates(query: string): Promise<CandidateSearchResult>;
+  reparseResume(revisionId: string, forceOcr: boolean): Promise<{ revision_id: string; task_id: string }>;
+  getResumeReview(revisionId: string): Promise<ResumeReview>;
+  approveResumeReview(revisionId: string, fields: Record<string, unknown>): Promise<ResumeReview>;
+  indexStatus(): Promise<IndexSyncStatus>;
+  retryIndexSync(): Promise<IndexSyncStatus>;
+  downloadResume(revisionId: string, filename: string): Promise<void>;
+  previewResume(revisionId: string): Promise<string>;
+  searchCandidates(query: string, filters?: CandidateSearchFilters): Promise<CandidateSearchResult>;
+  listCandidates(): Promise<CandidateListItem[]>;
+  listCandidatesPage?(page: number, pageSize: number): Promise<CandidatePage>;
   importJd(input: { company: string; title: string; sourceText: string }): Promise<ImportedJd>;
   importJdFile(file: File, company: string, title: string): Promise<ImportedJd>;
+  importJdBatch(sourceText: string): Promise<{ imported: ImportedJd[] }>;
+  importJdBatchFile(file: File): Promise<{ imported: ImportedJd[] }>;
+  listJds(): Promise<JdListItem[]>;
+  updateJdStatus(jdId: string, status: string): Promise<{ jd_id: string; status: string }>;
+  updateJdField(jdId: string, field: string, value: unknown): Promise<{ jd_id: string; revision_id: string; field: string; value: unknown }>;
   matchJd(revisionId: string, limit?: number): Promise<MatchRun>;
   matchBatch(revisionIds: string[], limit?: number): Promise<{ results: BatchMatchResult[] }>;
   markMatchResult(resultId: string, status: MatchMarkStatus): Promise<{ result_id: string; status: MatchMarkStatus }>;
+  listMatchResults(): Promise<{ groups: MatchResultGroup[] }>;
+  listMatchResultsForCandidate(candidateId: string): Promise<MatchCandidateItem[]>;
+  matchCandidate(candidateId: string): Promise<MatchCandidateItem[]>;
+  createCaseFromMatchResult(resultId: string): Promise<{ case_id: string; result_id: string; status: string }>;
+  exportMatchJd(revisionId: string): Promise<void>;
   health(): Promise<Record<string, { status: string; message?: string }>>;
   diagnostics(): Promise<DiagnosticsData>;
   exportDiagnostics(): Promise<void>;
@@ -242,16 +667,28 @@ export interface RecruitmentApi {
   searchBdLeads(query: string, limit?: number): Promise<BdLead[]>;
   searchLeadsForCandidate(candidateId: string, limit?: number): Promise<BdLead[]>;
   updateLeadStatus(leadId: string, status: string, note?: string): Promise<BdLead>;
+  runBdAgent(query: string, kind?: string, limit?: number): Promise<BdAgentQueryResult>;
+  runBdAgentStream(query: string, kind?: string, limit?: number, onProgress?: (progress: BdProgress) => void): Promise<BdAgentQueryResult>;
+  followUpBdAgent(sessionId: string, query: string, limit?: number): Promise<BdAgentQueryResult>;
   createCase(candidateId: string, jdId: string): Promise<CaseItem>;
-  listCases(candidateId?: string): Promise<CaseItem[]>;
-  advanceCase(caseId: string, stage: string, note?: string): Promise<CaseItem>;
-  undoCase(caseId: string): Promise<CaseItem>;
-  getCaseEvents(caseId: string): Promise<StageEventItem[]>;
-  dashboardOverview(): Promise<DashboardOverview>;
-  dashboardByJd(): Promise<{ jd_id: string; company: string; title: string; stage_counts: Record<string, number> }[]>;
+  listCases(candidateId?: string, jdId?: string): Promise<CaseItem[]>;
+  getCase(caseId: string): Promise<CaseDetail>;
+  recommendCase(caseId: string, payload?: CaseActionInput): Promise<CaseEventItem>;
+  enterInterview(caseId: string, payload?: CaseActionInput & { round_name?: string; round_type?: string }): Promise<CaseEventItem>;
+  recordResult(caseId: string, caseRoundId: string, result: string, payload?: CaseActionInput): Promise<CaseEventItem>;
+  passAndAdvance(caseId: string, caseRoundId: string, payload?: CaseActionInput & { next_round_name?: string }): Promise<CaseEventItem[]>;
+  offerCase(caseId: string, payload?: CaseActionInput): Promise<CaseEventItem>;
+  onboardCase(caseId: string, payload?: CaseActionInput): Promise<CaseEventItem>;
+  exitCase(caseId: string, result?: string, payload?: CaseActionInput): Promise<CaseEventItem>;
+  voidEvent(eventId: string, payload?: CaseActionInput): Promise<{ deleted: string }>;
+  dashboardOverview(filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<DashboardOverview>;
+  dashboardByJd(filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<DashboardByJd[]>;
+  dashboardTrend(granularity: string, filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<DashboardTrendItem[]>;
+  dashboardExport(filters?: { company?: string; jd_id?: string; date_from?: string; date_to?: string }): Promise<void>;
   reverseMatch(candidateId: string): Promise<ReverseMatchItem[]>;
   getCandidateContact(candidateId: string): Promise<CandidateContact>;
   updateCandidateContact(candidateId: string, input: { email: string | null; phone: string | null }): Promise<CandidateContact>;
+  updateCandidateField(candidateId: string, field: string, value: unknown): Promise<{ candidate_id: string; revision_id: string; field: string; value: unknown }>;
   listDeleted(): Promise<DeletedItem[]>;
   softDelete(entityType: "candidate" | "jd", entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
   restoreDeleted(entityType: string, entityId: string): Promise<{ entity_type: string; entity_id: string; deleted: boolean }>;
@@ -264,26 +701,65 @@ export interface RecruitmentApi {
   exportMatchRun(runId: string): Promise<void>;
   listBackups(): Promise<BackupSnapshot[]>;
   createBackup(label?: string): Promise<{ filename: string; path: string }>;
-  restoreBackup(filename: string): Promise<{ restored_from: string; safety_backup: string }>;
+  restoreBackup(filename: string): Promise<{ restored_from: string; safety_backup: string; restart_required?: boolean; status?: string }>;
   createPortableBackup(targetPath: string, passphrase: string): Promise<{ path: string; same_volume: boolean }>;
   restorePortableBackup(backupPath: string, targetRoot: string, passphrase: string): Promise<{ target_root: string; files_restored: number; files_verified: number; ok: boolean }>;
   listReminders(): Promise<ReminderItem[]>;
-  createReminder(input: { title: string; remind_at: string; note?: string }): Promise<ReminderItem>;
+  createReminder(input: CreateReminderInput): Promise<ReminderItem>;
   dismissReminder(id: string): Promise<ReminderItem>;
   migrateData(targetRoot: string): Promise<MigrationReport>;
   setDataRoot(path: string): Promise<string>;
   onboardingStatus(): Promise<OnboardingStatus>;
   testProviders(): Promise<ProviderCheck[]>;
+  listCompanies(): Promise<OrgCompany[]>;
+  createCompany(name: string): Promise<OrgCompany>;
+  updateCompany(companyId: string, name: string): Promise<OrgCompany>;
+  listDepartments(companyId: string): Promise<OrgDepartment[]>;
+  createDepartment(input: CreateOrgDepartmentInput): Promise<OrgDepartment>;
+  listEmployees(companyId: string): Promise<OrgEmployee[]>;
+  createEmployee(input: CreateOrgEmployeeInput): Promise<OrgEmployee>;
+  getOrgTree(companyId: string): Promise<OrgTreeNode>;
+  exportOrgInternal(companyId: string): Promise<void>;
+  exportOrgClient(companyId: string): Promise<void>;
+  exportOrgArchPdf(companyId: string): Promise<void>;
+  updateDepartment(departmentId: string, changes: UpdateOrgDepartmentInput): Promise<OrgDepartment>;
+  deleteDepartment(departmentId: string): Promise<void>;
+  updateEmployee(employeeId: string, changes: UpdateOrgEmployeeInput): Promise<OrgEmployee>;
+  deleteEmployee(employeeId: string): Promise<void>;
+  deleteCompany(companyId: string): Promise<void>;
 }
 
 
-const navigation = ["人才库", "JD 管理", "人岗匹配", "数据看板", "Mapping", "BD 助手", "设置"];
+const navigation = ["人才库", "JD 管理", "数据看板", "Mapping", "BD 助手", "设置", "招聘流程"];
+
+// 设置页中“回收站”及以下的高级功能默认隐藏；需要时改为 true 即可恢复。
+const SHOW_ADVANCED_SETTINGS = false;
+
+const CANDIDATE_PAGE_SIZE = 20;
+
+function pageWindow(current: number, totalPages: number): (number | "…")[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+  const pages: (number | "…")[] = [1];
+  if (current > 3) pages.push("…");
+  for (let i = Math.max(2, current - 1); i <= Math.min(totalPages - 1, current + 1); i++) pages.push(i);
+  if (current < totalPages - 2) pages.push("…");
+  pages.push(totalPages);
+  return pages;
+}
 
 const STAGES = [
   "待评估", "待联系", "已联系", "有意向", "已推荐",
   "初试", "复试", "终试", "Offer", "入职",
   "客户拒绝", "候选人拒绝", "暂缓", "岗位关闭"
 ];
+
+const JD_STATUS_OPTIONS: { value: JdStatus; label: string }[] = [
+  { value: "OPEN", label: "开放" },
+  { value: "FILLED", label: "招满" },
+  { value: "CANCELLED", label: "已取消" },
+];
+
+const AI_CATEGORY_OPTIONS = ["AI", "AI相关", "非AI"];
 
 const HEALTH_LABELS: Record<string, string> = {
   database: "数据库",
@@ -300,12 +776,313 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 
+function sortLeadsByConfidence(leads: BdAgentLead[]): BdAgentLead[] {
+  return [...leads].sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1));
+}
+
+
+function filterOrgTree(
+  root: OrgTreeNode,
+  search: string,
+  filterKind: string,
+  filterKey: boolean,
+): OrgTreeNode | null {
+  const q = search.trim().toLowerCase();
+  if (!q && !filterKind && !filterKey) return root;
+
+  function matches(node: OrgTreeNode): boolean {
+    if (filterKind && node.kind !== "company" && node.kind !== filterKind) return false;
+    if (filterKey && node.kind === "employee" && !node.is_key) return false;
+    if (!q) return true;
+    const hay = [node.name, node.title, node.job_level].filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(q);
+  }
+
+  function walk(node: OrgTreeNode): OrgTreeNode | null {
+    const children = node.children
+      .map(walk)
+      .filter((child): child is OrgTreeNode => child !== null);
+    if (matches(node) || children.length > 0) {
+      return { ...node, children };
+    }
+    return null;
+  }
+
+  return walk(root);
+}
+
 function taskLabel(task: TaskStatus): string {
   if (task.status === "SUCCESS") return "解析完成";
   if (task.status === "FAILED" || task.status === "DEAD_LETTER") return "解析失败";
   if (task.status === "PAUSED") return "已暂停";
   if (task.status === "CANCELLED") return "已取消";
   return `解析中 ${task.progress}%`;
+}
+
+function jdAiLabel(category: string | null): string {
+  if (category === "CORE_AI") return "AI";
+  if (category === "AI_RELATED") return "AI相关";
+  if (category === "NON_AI") return "非AI";
+  return "—";
+}
+
+function jdRequirementLabel(parsed: JdParsedData | null): string {
+  if (!parsed) return "—";
+  const tech = parsed.tech_direction?.join("、") || "";
+  const biz = parsed.business_direction?.join("、") || "";
+  return [tech ? `技术：${tech}` : "", biz ? `业务：${biz}` : ""].filter(Boolean).join("；") || "—";
+}
+
+function qsBand(rank: number | null | undefined): string {
+  if (rank == null) return "";
+  if (rank <= 50) return "前50";
+  if (rank <= 100) return "前100";
+  if (rank <= 150) return "前150";
+  if (rank <= 200) return "前200";
+  if (rank <= 300) return "前300";
+  return "前300之后";
+}
+
+function schoolLevelLabel(level: string | null | undefined): string {
+  const map: Record<string, string> = {
+    "985": "985",
+    "211": "211",
+    "双一流": "双一流",
+    "普通": "普通",
+    "海外": "海外",
+  };
+  return level ? (map[level] ?? level) : "";
+}
+
+function eduLabel(p: ParsedResumeData | null | undefined): string {
+  if (!p) return "";
+  const year = p.graduation_year ? String(p.graduation_year).slice(-2) : "";
+  const levelMap: Record<string, string> = { "985": "9", "211": "2", "双一流": "双", "普通": "普", "海外": "海" };
+  const level = p.school_level ? (levelMap[p.school_level] ?? p.school_level) : "";
+  const degreeMap: Record<string, string> = {
+    "博士": "博", "硕士": "硕", "本科": "本", "大专": "专",
+    "DOCTORATE": "博", "MASTER": "硕", "BACHELOR": "本", "ASSOCIATE": "专",
+  };
+  const degree = p.highest_degree ? (degreeMap[p.highest_degree] ?? p.highest_degree) : "";
+  const qs = qsBand(p.qs_rank);
+  const core = [year, level + degree].filter(Boolean).join("-");
+  return qs ? `${core}+qs${qs}` : core;
+}
+
+function splitList(text: string): string[] {
+  return text.split(/[、,，/]/).map((s) => s.trim()).filter(Boolean);
+}
+
+function copyToClipboard(text: string) {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text: string) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    // ignore
+  }
+  document.body.removeChild(area);
+}
+
+function patchParsed(parsed: ParsedResumeData | null, field: string, value: unknown): ParsedResumeData {
+  const next = { ...(parsed ?? {}) } as ParsedResumeData;
+  (next as Record<string, unknown>)[field] = value;
+  return next;
+}
+
+function patchCandidate(item: CandidateListItem, field: string, value: unknown): CandidateListItem {
+  const next: CandidateListItem = { ...item, parsed_data: patchParsed(item.parsed_data, field, value) };
+  if (field === "name" && value) next.display_name = value as string;
+  if (field === "phone") next.phone = (value as string) || null;
+  return next;
+}
+
+function patchSearchItem(item: CandidateSearchItem, field: string, value: unknown): CandidateSearchItem {
+  const next: CandidateSearchItem = { ...item, parsed_data: patchParsed(item.parsed_data, field, value) };
+  if (field === "name") next.name = (value as string) || "";
+  if (field === "phone") next.phone = (value as string) || null;
+  if (field === "total_years") next.total_years = typeof value === "number" ? value : null;
+  if (field === "highest_degree") next.highest_degree = (value as string) || null;
+  if (field === "location") next.location = (value as string) || null;
+  return next;
+}
+
+function EditableCell({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (next: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function save() {
+    if (draft === value) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } catch {
+      // keep editing so the user can retry
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function onContextMenu(event: ReactMouseEvent) {
+    event.preventDefault();
+    copyToClipboard(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 800);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        className="editable-input"
+        value={draft}
+        disabled={saving}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void save();
+          if (event.key === "Escape") setEditing(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={copied ? "editable-cell copied" : "editable-cell"}
+      title="双击修改，右键复制"
+      onContextMenu={onContextMenu}
+      onDoubleClick={() => {
+        setDraft(value);
+        setEditing(true);
+      }}
+    >
+      {value || "—"}
+    </span>
+  );
+}
+
+
+function renderTrendChart(data: DashboardTrendItem[], ref: RefObject<SVGSVGElement | null>) {
+  const width = 720;
+  const height = 320;
+  const padLeft = 48;
+  const padBottom = 48;
+  const padTop = 22;
+  const padRight = 16;
+  const chartWidth = width - padLeft - padRight;
+  const chartHeight = height - padTop - padBottom;
+  const maxValue = Math.max(1, ...data.map((d) => Math.max(d.recommendation, d.offer)));
+  const groupWidth = data.length ? chartWidth / data.length : chartWidth;
+  const barWidth = Math.min(40, Math.max(8, groupWidth * 0.3));
+
+  return (
+    <svg ref={ref} className="chart-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="推荐量与 offer 量趋势">
+      {data.map((d, i) => {
+        const cx = padLeft + groupWidth * i + groupWidth / 2;
+        const baseline = padTop + chartHeight;
+        const recHeight = (d.recommendation / maxValue) * chartHeight;
+        const offerHeight = (d.offer / maxValue) * chartHeight;
+        return (
+          <g key={d.period}>
+            <rect x={cx - barWidth - 2} y={baseline - recHeight} width={barWidth} height={recHeight} rx="3" fill="#3b82f6" />
+            <rect x={cx + 2} y={baseline - offerHeight} width={barWidth} height={offerHeight} rx="3" fill="#10b981" />
+            <text x={cx - barWidth / 2 - 2} y={baseline - recHeight - 4} textAnchor="middle" fontSize="9" fill="#3b82f6">{d.recommendation}</text>
+            <text x={cx + barWidth / 2 + 2} y={baseline - offerHeight - 4} textAnchor="middle" fontSize="9" fill="#10b981">{d.offer}</text>
+            <text x={cx} y={baseline + 16} textAnchor="middle" fontSize="10" fill="#64748b">{d.period}</text>
+          </g>
+        );
+      })}
+      <line x1={padLeft} y1={padTop} x2={padLeft} y2={padTop + chartHeight} stroke="#cbd5e1" />
+      <line x1={padLeft} y1={padTop + chartHeight} x2={width - padRight} y2={padTop + chartHeight} stroke="#cbd5e1" />
+      <text x={padLeft - 6} y={padTop + 4} textAnchor="end" fontSize="10" fill="#64748b">{maxValue}</text>
+      <text x={padLeft - 6} y={padTop + chartHeight} textAnchor="end" fontSize="10" fill="#64748b">0</text>
+      <g transform={`translate(${padLeft + 8}, ${height - 16})`}>
+        <rect width="10" height="10" fill="#3b82f6" />
+        <text x="14" y="9" fontSize="10" fill="#334155">推荐量</text>
+        <rect x="64" width="10" height="10" fill="#10b981" />
+        <text x="78" y="9" fontSize="10" fill="#334155">offer 量</text>
+      </g>
+    </svg>
+  );
+}
+
+
+function renderPassRateChart(data: DashboardByJd[], ref: RefObject<SVGSVGElement | null>) {
+  const labelWidth = 150;
+  const barWidth = 360;
+  const valueWidth = 70;
+  const rowHeight = 24;
+  const titleHeight = 22;
+  const groupGap = 20;
+  const width = labelWidth + barWidth + valueWidth + 24;
+
+  const groups = data
+    .filter((jd) => jd.rounds.length > 0)
+    .map((jd) => ({
+      title: `${jd.company} · ${jd.title}`,
+      rows: [
+        ...jd.rounds.map((r) => ({ label: r.round_name, value: r.pass_rate, highlight: false })),
+        { label: "最终 offer 率", value: jd.final_offer_rate, highlight: true },
+      ],
+    }));
+
+  let height = 12;
+  const layouts = groups.map((g) => {
+    const start = height;
+    height += titleHeight + g.rows.length * rowHeight + groupGap;
+    return { ...g, start };
+  });
+  height = Math.max(height, 40);
+
+  return (
+    <svg ref={ref} className="chart-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="每岗位每轮通过率">
+      {layouts.map((g, gi) => (
+        <g key={gi}>
+          <text x={8} y={g.start + 14} fontSize="12" fontWeight="bold" fill="#0f172a">{g.title}</text>
+          {g.rows.map((row, ri) => {
+            const ry = g.start + titleHeight + ri * rowHeight;
+            const pct = Math.min(1, Math.max(0, row.value ?? 0));
+            return (
+              <g key={ri}>
+                <text x={8} y={ry + 16} fontSize="11" fill="#334155">{row.label}</text>
+                <rect x={labelWidth} y={ry + 4} width={barWidth} height={16} rx={3} fill="#e2e8f0" />
+                <rect x={labelWidth} y={ry + 4} width={pct * barWidth} height={16} rx={3} fill={row.highlight ? "#f59e0b" : "#6366f1"} />
+                <text x={labelWidth + barWidth + 8} y={ry + 16} fontSize="11" fill="#334155">
+                  {row.value === null ? "—" : `${(row.value * 100).toFixed(0)}%`}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      ))}
+    </svg>
+  );
 }
 
 
@@ -315,24 +1092,35 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 人才库
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CandidateSearchItem[]>([]);
-  const [selected, setSelected] = useState<CandidateSearchItem | null>(null);
+  const [candidates, setCandidates] = useState<CandidateListItem[]>([]);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const [candidateTotal, setCandidateTotal] = useState(0);
+  const candidateTotalPages = Math.max(1, Math.ceil(candidateTotal / CANDIDATE_PAGE_SIZE));
+  const [searchFilterDraft, setSearchFilterDraft] = useState({
+    minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "",
+    schoolLevel: "", maxQsRank: "", excludeSkills: "",
+  });
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
   const [folderPath, setFolderPath] = useState("");
+  const [batchProgress, setBatchProgress] = useState<{ total: number; done: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState("");
   const [searching, setSearching] = useState(false);
 
   // JD 管理
-  const [jdCompany, setJdCompany] = useState("");
-  const [jdTitle, setJdTitle] = useState("");
   const [jdSource, setJdSource] = useState("");
-  const [jdResult, setJdResult] = useState<ImportedJd | null>(null);
+  const [jdResult, setJdResult] = useState<ImportedJd[]>([]);
+  const [jds, setJds] = useState<JdListItem[]>([]);
+  const [openJdSource, setOpenJdSource] = useState<Record<string, boolean>>({});
+  const [jdFilter, setJdFilter] = useState({ title: "", company: "", status: "", ai: "" });
 
-  // 人岗匹配
-  const [matchRevision, setMatchRevision] = useState("");
-  const [matchRun, setMatchRun] = useState<MatchRun | null>(null);
-  const [batchRevisions, setBatchRevisions] = useState("");
-  const [batchMatchCount, setBatchMatchCount] = useState<number | null>(null);
-  const [matchMarks, setMatchMarks] = useState<Record<string, MatchMarkStatus>>({});
+  // 匹配结果抽屉
+  const [matchDrawer, setMatchDrawer] = useState<MatchDrawerState | null>(null);
+  const [matchCaseIds, setMatchCaseIds] = useState<Record<string, string>>({});
+  const [creatingCase, setCreatingCase] = useState(false);
+  const creatingCaseRef = useRef(false);
 
   // 设置 / 健康
   const [health, setHealth] = useState<Record<string, { status: string; message?: string }> | null>(null);
@@ -340,34 +1128,49 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 数据看板
   const [diagnostics, setDiagnostics] = useState<DiagnosticsData | null>(null);
 
-  // Mapping
-  const [projects, setProjects] = useState<MappingProject[]>([]);
-  const [projectName, setProjectName] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [snapshots, setSnapshots] = useState<MappingSnapshot[]>([]);
-  const [mappingText, setMappingText] = useState("");
-  const [mappingLabel, setMappingLabel] = useState("");
-  const [tree, setTree] = useState<MappingTreeNode[]>([]);
+  // Mapping（组织架构）
+  const [companies, setCompanies] = useState<OrgCompany[]>([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
+  const [companyName, setCompanyName] = useState("");
+  const [departments, setDepartments] = useState<OrgDepartment[]>([]);
+  const [employees, setEmployees] = useState<OrgEmployee[]>([]);
+  const [orgTree, setOrgTree] = useState<OrgTreeNode | null>(null);
+  const [selectedOrgNodeId, setSelectedOrgNodeId] = useState<string | null>(null);
+  const [orgSearch, setOrgSearch] = useState("");
+  const [orgFilterKind, setOrgFilterKind] = useState("");
+  const [orgFilterKey, setOrgFilterKey] = useState(false);
+  const [pendingEditId, setPendingEditId] = useState<string | null>(null);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const undoStackRef = useRef<{ undo: () => Promise<void>; redo: () => Promise<void> }[]>([]);
+  const redoStackRef = useRef<{ undo: () => Promise<void>; redo: () => Promise<void> }[]>([]);
 
   // BD 助手
   const [bdQuery, setBdQuery] = useState("");
-  const [bdLeads, setBdLeads] = useState<BdLead[]>([]);
+  const [bdFollowUp, setBdFollowUp] = useState("");
+  const [bdSessionId, setBdSessionId] = useState<string | null>(null);
+  const [bdLeads, setBdLeads] = useState<BdAgentLead[]>([]);
+  const [bdLoading, setBdLoading] = useState(false);
+  const [bdProgress, setBdProgress] = useState<BdProgress | null>(null);
 
   // 看板
   const [dashboard, setDashboard] = useState<DashboardOverview | null>(null);
+  const [dashboardByJdData, setDashboardByJdData] = useState<DashboardByJd[]>([]);
+  const [dashboardTrend, setDashboardTrend] = useState<DashboardTrendItem[]>([]);
+  const [trendGranularity, setTrendGranularity] = useState("month");
+  const [dashboardDraft, setDashboardDraft] = useState<DashboardFilters>({});
+  const [dashboardFilters, setDashboardFilters] = useState<DashboardFilters>({});
+  const [dashboardBusy, setDashboardBusy] = useState(false);
+  const dashboardRequest = useRef(0);
+  const trendSvgRef = useRef<SVGSVGElement | null>(null);
+  const passRateSvgRef = useRef<SVGSVGElement | null>(null);
 
-  // 招聘流程（候选人详情）
-  const [selectedCases, setSelectedCases] = useState<CaseItem[]>([]);
-  const [caseEvents, setCaseEvents] = useState<StageEventItem[]>([]);
-  const [reverseMatches, setReverseMatches] = useState<ReverseMatchItem[]>([]);
-  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
-  const [selectedContact, setSelectedContact] = useState<CandidateContact | null>(null);
-  const [resumeRevisions, setResumeRevisions] = useState<ResumeRevision[]>([]);
-  const [contactEmail, setContactEmail] = useState("");
-  const [contactPhone, setContactPhone] = useState("");
-  const [correctedName, setCorrectedName] = useState("");
-  const [lastCorrectionId, setLastCorrectionId] = useState<string | null>(null);
-  const [correctionMessage, setCorrectionMessage] = useState("");
+  // 招聘流程面板
+  const [caseDrawer, setCaseDrawer] = useState<CaseDetail | null>(null);
+  const [resumeReview, setResumeReview] = useState<ResumeReview | null>(null);
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [caseJdFilter, setCaseJdFilter] = useState("");
 
   // 回收站
   const [deletedItems, setDeletedItems] = useState<DeletedItem[]>([]);
@@ -387,11 +1190,6 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [portablePassphrase, setPortablePassphrase] = useState("");
   const [portableMessage, setPortableMessage] = useState("");
 
-  // 提醒
-  const [reminders, setReminders] = useState<ReminderItem[]>([]);
-  const [reminderTitle, setReminderTitle] = useState("");
-  const [reminderAt, setReminderAt] = useState("");
-
   // 数据迁移
   const [migrationTarget, setMigrationTarget] = useState("");
   const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
@@ -404,10 +1202,27 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (!query.trim()) return;
     setSearching(true);
     setError(null);
+    setNotice(null);
     try {
-      const response = await api.searchCandidates(query.trim());
+      const filters: CandidateSearchFilters = {};
+      if (searchFilterDraft.minYears !== "") filters.min_years = Number(searchFilterDraft.minYears);
+      if (searchFilterDraft.maxYears !== "") filters.max_years = Number(searchFilterDraft.maxYears);
+      if (searchFilterDraft.degree) filters.highest_degree = searchFilterDraft.degree;
+      if (searchFilterDraft.locations.trim()) filters.locations = splitList(searchFilterDraft.locations);
+      if (searchFilterDraft.preferredLocations.trim()) filters.preferred_locations = splitList(searchFilterDraft.preferredLocations);
+      if (searchFilterDraft.schoolLevel.trim()) filters.school_level = searchFilterDraft.schoolLevel.trim();
+      if (searchFilterDraft.maxQsRank !== "") filters.max_qs_rank = Number(searchFilterDraft.maxQsRank);
+      if (searchFilterDraft.excludeSkills.trim()) filters.exclude_skills = splitList(searchFilterDraft.excludeSkills);
+      const response = await api.searchCandidates(query.trim(), filters);
       setResults(response.items);
-      setSelected(null);
+      if (response.empty_reason === "index_not_ready") {
+        setNotice("索引尚未就绪，请先导入并解析简历。");
+      } else if (response.empty_reason === "service_error") {
+        setError("检索服务暂不可用，请稍后重试。");
+      }
+      if (response.degraded_reasons.length > 0) {
+        setNotice(`部分检索能力降级：${response.degraded_reasons.join("、")}`);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "搜索失败，请稍后重试");
     } finally {
@@ -423,6 +1238,7 @@ export function App({ api }: { api: RecruitmentApi }) {
           const task = await api.getTask(taskId);
           setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
           if (task.status === "SUCCESS" || task.status === "FAILED" || task.status === "DEAD_LETTER") {
+            if (task.task_type === "PARSE_RESUME") await loadCandidates(1);
             return;
           }
         } catch {
@@ -442,6 +1258,387 @@ export function App({ api }: { api: RecruitmentApi }) {
       setError(caught instanceof Error ? caught.message : "任务列表加载失败");
     }
   }
+
+  async function loadCandidates(page = 1) {
+    setError(null);
+    try {
+      if (api.listCandidatesPage) {
+        const response = await api.listCandidatesPage(page, CANDIDATE_PAGE_SIZE);
+        setCandidates(response.items);
+        setCandidatePage(response.page);
+        setCandidateTotal(response.total);
+      } else {
+        const items = await api.listCandidates();
+        setCandidates(items);
+        setCandidatePage(1);
+        setCandidateTotal(items.length);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "候选人列表加载失败");
+    }
+  }
+
+  async function updateCandidateFieldValue(candidateId: string, field: string, value: unknown) {
+    setError(null);
+    try {
+      await api.updateCandidateField(candidateId, field, value);
+      setCandidates((list) => list.map((c) => (c.candidate_id === candidateId ? patchCandidate(c, field, value) : c)));
+      setResults((list) => list.map((r) => (r.candidate_id === candidateId ? patchSearchItem(r, field, value) : r)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "修改失败");
+      throw caught;
+    }
+  }
+
+  async function forceReparse(revisionId: string) {
+    setError(null);
+    try {
+      const result = await api.reparseResume(revisionId, true);
+      const task = await api.getTask(result.task_id);
+      setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+      pollTask(result.task_id);
+      // 完成后刷新候选人列表，让新画像/状态回显。
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+          const current = await api.getTask(result.task_id);
+          if (current.status === "SUCCESS" || current.status === "FAILED" || current.status === "DEAD_LETTER") {
+            if (current.status === "SUCCESS") await loadCandidates();
+            break;
+          }
+        } catch {
+          break;
+        }
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "强制 OCR 重新解析失败");
+    }
+  }
+
+  async function loadJds() {
+    setError(null);
+    try {
+      setJds(await api.listJds());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "JD 列表加载失败");
+    }
+  }
+
+  async function updateJdStatus(jdId: string, status: string) {
+    setError(null);
+    try {
+      const updated = await api.updateJdStatus(jdId, status);
+      setJds((current) =>
+        current.map((jd) => (jd.jd_id === updated.jd_id ? { ...jd, jd_status: updated.status } : jd))
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "岗位状态更新失败");
+    }
+  }
+
+  async function updateJdFieldValue(jdId: string, field: string, value: unknown) {
+    setError(null);
+    try {
+      await api.updateJdField(jdId, field, value);
+      await loadJds();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "岗位信息修改失败");
+      throw caught;
+    }
+  }
+
+  async function runJdMatch(jd: JdListItem) {
+    setError(null);
+    try {
+      const result = await api.matchJd(jd.revision_id, 20);
+      setMatchDrawer({
+        mode: "candidates",
+        title: jd.title || "岗位",
+        items: result.items,
+        statuses: {},
+      });
+      if (result.items.length === 0) {
+        setError("该岗位未匹配到候选人：请确认候选人已导入且解析完成，并满足岗位的年限/学历等硬性要求。");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "匹配失败");
+    }
+  }
+
+  async function runCandidateMatch(candidateId: string, name: string) {
+    setError(null);
+    try {
+      const items = await api.matchCandidate(candidateId);
+      setMatchDrawer({
+        mode: "jds",
+        title: name || "候选人",
+        items,
+        statuses: {},
+      });
+      if (items.length === 0) {
+        setError("该候选人未匹配到岗位：请确认已有处于「开放」状态的岗位。");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "匹配失败");
+    }
+  }
+
+  async function createCaseFromDrawer(resultId: string) {
+    if (creatingCaseRef.current) return;
+    const existingCaseId = matchCaseIds[resultId];
+    if (existingCaseId) { await openCaseDrawer(existingCaseId); return; }
+    creatingCaseRef.current = true;
+    setCreatingCase(true);
+    setError(null);
+    try {
+      const created = await api.createCaseFromMatchResult(resultId);
+      setMatchCaseIds((current) => ({ ...current, [resultId]: created.case_id }));
+      setMatchDrawer((current) => current ? {
+        ...current,
+        statuses: { ...current.statuses, [resultId]: "保留" },
+      } : current);
+      await openCaseDrawer(created.case_id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建流程失败");
+    } finally {
+      creatingCaseRef.current = false;
+      setCreatingCase(false);
+    }
+  }
+
+  async function openCaseDrawer(caseId: string) {
+    setError(null);
+    try {
+      setCaseDrawer(await api.getCase(caseId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "加载流程失败");
+    }
+  }
+
+  async function loadCases(jdId = caseJdFilter) {
+    setError(null);
+    try {
+      setCases(await api.listCases(undefined, jdId || undefined));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "加载流程列表失败");
+    }
+  }
+
+  async function deleteJd(jd: JdListItem) {
+    setError(null);
+    try {
+      await api.softDelete("jd", jd.jd_id);
+      await loadJds();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "删除岗位失败");
+    }
+  }
+
+  function toggleJdSource(revisionId: string) {
+    setOpenJdSource((current) => ({ ...current, [revisionId]: !current[revisionId] }));
+  }
+
+  async function downloadResumeFile(revisionId: string, filename: string) {
+    setError(null);
+    try {
+      await api.downloadResume(revisionId, filename);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "简历下载失败");
+    }
+  }
+
+  async function previewResumeFile(revisionId: string, name?: string, filename?: string) {
+    setError(null);
+    setNotice(null);
+    const file = filename || name || "";
+    const suffix = file.slice(file.lastIndexOf(".")).toLowerCase();
+    if (suffix === ".doc" || suffix === ".docx") {
+      setNotice("该简历为 Word 版本，请下载后浏览");
+      void downloadResumeFile(revisionId, filename || name || "简历");
+      return;
+    }
+    try {
+      const url = await api.previewResume(revisionId);
+      setPreviewName(file || "简历预览");
+      setPreviewUrl(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "简历预览失败");
+    }
+  }
+
+  async function openResumeReview(revisionId: string) {
+    setError(null);
+    try { setResumeReview(await api.getResumeReview(revisionId)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "加载复核资料失败"); }
+  }
+
+  function renderCandidateTable(rows: { key: string; candidateId: string; name: string; phone: string | null; revisionId: string; filename: string; parsed: ParsedResumeData | null }[]) {
+    return (
+      <table>
+        <thead>
+          <tr><th>姓名</th><th>学历</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const p = r.parsed;
+            const industry = p?.current_industry || p?.longest_industry
+              ? `${p.current_industry ? `最近：${p.current_industry}` : ""}${p.longest_industry ? ` 最长：${p.longest_industry}` : ""}`
+              : "—";
+            const techValue = p?.tech_direction?.join("、") || "";
+            const bizValue = p?.business_direction?.join("、") || "";
+            return (
+              <Fragment key={r.key}>
+                <tr>
+                  <td><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></td>
+                  <td>{eduLabel(p) || "—"}</td>
+                  <td><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></td>
+                  <td>{industry}</td>
+                  <td><EditableCell value={techValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "tech_direction", splitList(next))} /></td>
+                  <td><EditableCell value={bizValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "business_direction", splitList(next))} /></td>
+                  <td>
+                    <button className="detail-button" onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
+                    <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
+                    <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
+                    <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
+                    <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>复核详情</button>
+                  </td>
+                </tr>
+                <tr>
+                  <td colSpan={7}>
+                    {p?.experiences && p.experiences.length > 0 && (
+                      <div className="candidate-line">
+                        <small>工作履历</small>
+                        {p.experiences.map((e, i) => {
+                          const head = [e.title, e.company].filter(Boolean).join(" @ ");
+                          const tail = [e.industry ? `（${e.industry}）` : "", e.summary].filter(Boolean).join("，");
+                          return <div key={i}>{[head, tail].filter(Boolean).join("，")}</div>;
+                        })}
+                      </div>
+                    )}
+                    {p?.projects && p.projects.length > 0 && (
+                      <div className="candidate-line">
+                        <small>项目经验</small>
+                        {p.projects.map((pr, i) => <div key={i}>{pr.name ?? ""}{pr.tech_stack ? `（${pr.tech_stack}）` : ""}{pr.business_scene ? `，${pr.business_scene}` : ""}</div>)}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  }
+
+  function renderVirtualCandidateList(rows: { key: string; candidateId: string; name: string; phone: string | null; revisionId: string; filename: string; parsed: ParsedResumeData | null; revisionStatus?: string | null; reviewError?: string | null }[]) {
+    if (rows.length === 0) return null;
+    return (
+      <div className="virtual-list">
+        {rows.map((r) => {
+          const p = r.parsed;
+          const recentIndustry = p?.current_industry || "—";
+          const longestIndustry = p?.longest_industry || "—";
+          const techValue = p?.tech_direction?.join("、") || "";
+          const bizValue = p?.business_direction?.join("、") || "";
+          return (
+            <div key={r.key} className="virtual-row">
+              <div className="virtual-row-main">
+                <div className="v-col v-name"><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></div>
+                <div className="v-col v-edu">{eduLabel(p) || "—"}</div>
+                <div className="v-col v-phone"><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></div>
+                <div className="v-col v-recent">{recentIndustry}</div>
+                <div className="v-col v-longest">{longestIndustry}</div>
+                <div className="v-col v-actions">
+                  <button className="detail-button" disabled={!!r.revisionStatus && r.revisionStatus !== "READY"} onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
+                  <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
+                  <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
+                </div>
+              </div>
+              <div className="virtual-row-sub">
+                <div className="v-col v-tech"><EditableCell value={techValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "tech_direction", splitList(next))} /></div>
+                <div className="v-col v-biz"><EditableCell value={bizValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "business_direction", splitList(next))} /></div>
+                <div className="v-col v-actions">
+                  <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
+                  <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{r.revisionStatus === "FAILED" || r.revisionStatus === "PENDING_REVIEW" ? "待复核" : r.reviewError ? "解析异常 · 复核" : "复核详情"}</button>
+                </div>
+              </div>
+              <div className="virtual-row-detail">
+                {r.reviewError && <p className="error-banner">{r.reviewError}</p>}
+                {p?.experiences && p.experiences.length > 0 && (
+                  <details className="candidate-collapse">
+                    <summary>工作履历（{p.experiences.length}）</summary>
+                    <div className="candidate-line">
+                      {p.experiences.map((e, i) => {
+                        const head = [e.title, e.company].filter(Boolean).join(" @ ");
+                        const tail = [e.industry ? `（${e.industry}）` : "", e.summary].filter(Boolean).join("，");
+                        return <div key={i}>{[head, tail].filter(Boolean).join("，")}</div>;
+                      })}
+                    </div>
+                  </details>
+                )}
+                {p?.projects && p.projects.length > 0 && (
+                  <details className="candidate-collapse">
+                    <summary>项目经验（{p.projects.length}）</summary>
+                    <div className="candidate-line">
+                      {p.projects.map((pr, i) => {
+                        const parts = [
+                          pr.name,
+                          pr.tech_stack ? `技术栈：${pr.tech_stack}` : "",
+                          pr.business_scene ? `业务：${pr.business_scene}` : "",
+                          pr.summary,
+                        ].filter(Boolean);
+                        return <div key={i}>{parts.join("，")}</div>;
+                      })}
+                    </div>
+                  </details>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const resultsTable = useMemo(
+    () =>
+      results.length === 0
+        ? null
+        : renderCandidateTable(
+            results.map((item) => ({
+              key: item.candidate_id,
+              candidateId: item.candidate_id,
+              name: item.name,
+              phone: item.phone,
+              revisionId: item.revision_id,
+              filename: item.original_filename ?? "",
+              parsed: item.parsed_data,
+            }))
+          ),
+    [results]
+  );
+
+  const candidatesTable = useMemo(
+    () =>
+      candidates.length === 0
+        ? null
+        : renderVirtualCandidateList(
+            candidates.map((c) => ({
+              key: c.candidate_id,
+              candidateId: c.candidate_id,
+              name: c.display_name,
+              phone: c.phone,
+              revisionId: c.revision_id,
+              filename: c.original_filename ?? "",
+              parsed: c.parsed_data,
+              revisionStatus: c.revision_status,
+              reviewError: c.error_message || c.error_code,
+            }))
+          ),
+    [candidates]
+  );
 
   async function controlTask(task: TaskStatus, action: TaskAction) {
     setError(null);
@@ -476,11 +1673,9 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     try {
       const result = await api.importFolder(folderPath.trim());
-      for (const imported of result.imported) {
-        const task = await api.getTask(imported.task_id);
-        setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
-        pollTask(imported.task_id);
-      }
+      const total = result.imported.length;
+      setBatchProgress({ total, done: 0 });
+      pollBatchTasks(result.imported.map((item) => item.task_id), total);
       if (result.skipped.length > 0 || result.errors.length > 0) {
         setError(`已导入 ${result.imported.length} 个，跳过 ${result.skipped.length} 个，失败 ${result.errors.length} 个`);
       }
@@ -490,17 +1685,35 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  function pollBatchTasks(taskIds: string[], total: number) {
+    async function run() {
+      const deadline = Date.now() + 300_000;
+      while (Date.now() < deadline) {
+        try {
+          const tasks = await api.listTasks();
+          const done = tasks.filter((task) => taskIds.includes(task.id) && ["SUCCESS", "FAILED", "DEAD_LETTER"].includes(task.status)).length;
+          setBatchProgress({ total, done });
+          if (done >= total) {
+            await loadCandidates();
+            return;
+          }
+        } catch {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+    void run();
+  }
+
   async function submitJd(event: FormEvent) {
     event.preventDefault();
-    if (!jdTitle.trim() || !jdSource.trim()) return;
+    if (!jdSource.trim()) return;
     setError(null);
     try {
-      const result = await api.importJd({
-        company: jdCompany.trim(),
-        title: jdTitle.trim(),
-        sourceText: jdSource.trim()
-      });
-      setJdResult(result);
+      const result = await api.importJdBatch(jdSource.trim());
+      setJdResult(result.imported);
+      await loadJds();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "JD 导入失败");
     }
@@ -510,44 +1723,11 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (!file) return;
     setError(null);
     try {
-      setJdResult(await api.importJdFile(file, jdCompany.trim(), jdTitle.trim()));
+      const result = await api.importJdBatchFile(file);
+      setJdResult(result.imported);
+      await loadJds();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "JD 文件导入失败");
-    }
-  }
-
-  async function runMatch(event: FormEvent) {
-    event.preventDefault();
-    if (!matchRevision.trim()) return;
-    setError(null);
-    try {
-      const result = await api.matchJd(matchRevision.trim(), 20);
-      setMatchRun(result);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "匹配失败");
-    }
-  }
-
-  async function runBatchMatch(event: FormEvent) {
-    event.preventDefault();
-    const revisionIds = batchRevisions.split(/[\s,，]+/).map((id) => id.trim()).filter(Boolean);
-    if (revisionIds.length === 0) return;
-    setError(null);
-    try {
-      const response = await api.matchBatch(revisionIds, 20);
-      setBatchMatchCount(response.results.length);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "批量匹配失败");
-    }
-  }
-
-  async function markMatch(resultId: string, status: MatchMarkStatus) {
-    setError(null);
-    try {
-      const marked = await api.markMatchResult(resultId, status);
-      setMatchMarks((current) => ({ ...current, [marked.result_id]: marked.status }));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "匹配结果标记失败");
     }
   }
 
@@ -578,225 +1758,459 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function loadProjects() {
+  async function loadCompanies() {
     setError(null);
     try {
-      setProjects(await api.listMappingProjects());
+      setCompanies(await api.listCompanies());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "项目列表加载失败");
+      setError(caught instanceof Error ? caught.message : "公司列表加载失败");
     }
   }
 
-  async function createProject(event: FormEvent) {
+  async function reloadOrgTree(companyId: string) {
+    try {
+      const [tree, deps, emps] = await Promise.all([
+        api.getOrgTree(companyId),
+        api.listDepartments(companyId),
+        api.listEmployees(companyId),
+      ]);
+      setOrgTree(tree);
+      setDepartments(deps);
+      setEmployees(emps);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "组织数据加载失败");
+    }
+  }
+
+  async function createCompany(event: FormEvent) {
     event.preventDefault();
-    if (!projectName.trim()) return;
+    if (!companyName.trim()) return;
     setError(null);
     try {
-      const project = await api.createMappingProject(projectName.trim());
-      setProjects((current) => [project, ...current]);
-      setProjectName("");
+      const company = await api.createCompany(companyName.trim());
+      setCompanies((current) => [...current, company]);
+      setCompanyName("");
+      setSelectedCompanyId(company.id);
+      setSelectedOrgNodeId(null);
+      setOrgTree(null);
+      setDepartments([]);
+      setEmployees([]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建项目失败");
+      setError(caught instanceof Error ? caught.message : "创建公司失败");
     }
   }
 
-  async function selectProject(projectId: string) {
+  async function selectCompany(companyId: string) {
     setError(null);
-    setSelectedProjectId(projectId);
+    setSelectedCompanyId(companyId);
+    setSelectedOrgNodeId(null);
+    await reloadOrgTree(companyId);
+  }
+
+  async function addOrgChild(node: OrgTreeNode) {
+    if (!selectedCompanyId) return;
+    const companyId = selectedCompanyId;
+    setError(null);
     try {
-      setSnapshots(await api.listMappingSnapshots(projectId));
+      let kind: "department" | "employee";
+      let createdId: string;
+      let deptArgs: CreateOrgDepartmentInput | null = null;
+      let empArgs: CreateOrgEmployeeInput | null = null;
+      if (node.kind === "company") {
+        deptArgs = { company_id: companyId, name: "新部门" };
+        const dept = await api.createDepartment(deptArgs);
+        kind = "department";
+        createdId = dept.id;
+      } else if (node.kind === "department") {
+        deptArgs = { company_id: companyId, name: "新部门", parent_id: node.id };
+        const dept = await api.createDepartment(deptArgs);
+        kind = "department";
+        createdId = dept.id;
+      } else {
+        const emp = employees.find((e) => e.id === node.id);
+        empArgs = {
+          company_id: companyId,
+          department_id: emp?.department_id ?? null,
+          name: "新人员",
+          report_to: node.id,
+        };
+        const created = await api.createEmployee(empArgs);
+        kind = "employee";
+        createdId = created.id;
+      }
+      await reloadOrgTree(companyId);
+      setSelectedOrgNodeId(createdId);
+      setPendingEditId(createdId);
+      recordUndo({
+        undo: async () => {
+          if (kind === "department") await api.deleteDepartment(createdId);
+          else await api.deleteEmployee(createdId);
+          await reloadOrgTree(companyId);
+        },
+        redo: async () => {
+          if (kind === "department" && deptArgs) await api.createDepartment(deptArgs);
+          else if (empArgs) await api.createEmployee(empArgs);
+          await reloadOrgTree(companyId);
+        },
+      });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "快照加载失败");
+      setError(caught instanceof Error ? caught.message : "新增节点失败");
     }
   }
 
-  async function buildTree(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedProjectId || !mappingText.trim()) return;
+  async function addOrgSibling(node: OrgTreeNode) {
+    if (!selectedCompanyId) return;
+    const companyId = selectedCompanyId;
     setError(null);
     try {
-      const snapshot = await api.buildMappingTree(
-        selectedProjectId,
-        mappingText,
-        mappingLabel.trim()
-      );
-      setSnapshots((current) => [snapshot, ...current]);
-      setTree(await api.getMappingTree(snapshot.id));
-      setMappingText("");
-      setMappingLabel("");
+      let kind: "department" | "employee";
+      let createdId: string;
+      let deptArgs: CreateOrgDepartmentInput | null = null;
+      let empArgs: CreateOrgEmployeeInput | null = null;
+      if (node.kind === "department") {
+        const dept = departments.find((d) => d.id === node.id);
+        deptArgs = { company_id: companyId, name: "新部门", parent_id: dept?.parent_id ?? null };
+        const created = await api.createDepartment(deptArgs);
+        kind = "department";
+        createdId = created.id;
+      } else if (node.kind === "employee") {
+        const emp = employees.find((e) => e.id === node.id);
+        empArgs = {
+          company_id: companyId,
+          department_id: emp?.department_id ?? null,
+          name: "新人员",
+          report_to: emp?.report_to ?? null,
+        };
+        const created = await api.createEmployee(empArgs);
+        kind = "employee";
+        createdId = created.id;
+      } else {
+        return;
+      }
+      await reloadOrgTree(companyId);
+      setSelectedOrgNodeId(createdId);
+      setPendingEditId(createdId);
+      recordUndo({
+        undo: async () => {
+          if (kind === "department") await api.deleteDepartment(createdId);
+          else await api.deleteEmployee(createdId);
+          await reloadOrgTree(companyId);
+        },
+        redo: async () => {
+          if (kind === "department" && deptArgs) await api.createDepartment(deptArgs);
+          else if (empArgs) await api.createEmployee(empArgs);
+          await reloadOrgTree(companyId);
+        },
+      });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "建树失败");
+      setError(caught instanceof Error ? caught.message : "新增节点失败");
     }
   }
 
-  async function loadTree(snapshotId: string) {
+  async function addOrgPerson(node: OrgTreeNode) {
+    if (!selectedCompanyId) return;
+    const companyId = selectedCompanyId;
     setError(null);
     try {
-      setTree(await api.getMappingTree(snapshotId));
+      let empArgs: CreateOrgEmployeeInput;
+      if (node.kind === "department") {
+        empArgs = { company_id: companyId, department_id: node.id, name: "新人员" };
+      } else if (node.kind === "employee") {
+        const sourceEmp = employees.find((e) => e.id === node.id);
+        empArgs = { company_id: companyId, department_id: sourceEmp?.department_id ?? null, name: "新人员", report_to: node.id };
+      } else {
+        return;
+      }
+      const created = await api.createEmployee(empArgs);
+      await reloadOrgTree(companyId);
+      setSelectedOrgNodeId(created.id);
+      setPendingEditId(created.id);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "树加载失败");
+      setError(caught instanceof Error ? caught.message : "新增人员失败");
     }
+  }
+
+  async function renameOrgNode(node: OrgTreeNode, name: string) {
+    const companyId = selectedCompanyId;
+    const oldName = node.name;
+    setError(null);
+    try {
+      if (node.kind === "company") {
+        await api.updateCompany(node.id, name);
+        setCompanies((current) => current.map((c) => (c.id === node.id ? { ...c, name } : c)));
+      } else if (node.kind === "employee") {
+        await api.updateEmployee(node.id, { name });
+      } else if (node.kind === "department") {
+        await api.updateDepartment(node.id, { name });
+      }
+      if (companyId) await reloadOrgTree(companyId);
+      recordUndo({
+        undo: async () => {
+          if (node.kind === "company") {
+            await api.updateCompany(node.id, oldName);
+            setCompanies((current) => current.map((c) => (c.id === node.id ? { ...c, name: oldName } : c)));
+          } else if (node.kind === "employee") {
+            await api.updateEmployee(node.id, { name: oldName });
+          } else if (node.kind === "department") {
+            await api.updateDepartment(node.id, { name: oldName });
+          }
+          if (companyId) await reloadOrgTree(companyId);
+        },
+        redo: async () => {
+          if (node.kind === "company") {
+            await api.updateCompany(node.id, name);
+            setCompanies((current) => current.map((c) => (c.id === node.id ? { ...c, name } : c)));
+          } else if (node.kind === "employee") {
+            await api.updateEmployee(node.id, { name });
+          } else if (node.kind === "department") {
+            await api.updateDepartment(node.id, { name });
+          }
+          if (companyId) await reloadOrgTree(companyId);
+        },
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "重命名失败");
+    }
+  }
+
+  async function deleteOrgNode(node: OrgTreeNode) {
+    const companyId = selectedCompanyId;
+    setError(null);
+    try {
+      const savedEmployee = node.kind === "employee" ? employees.find((e) => e.id === node.id) ?? null : null;
+      const savedDepartment = node.kind === "department" ? departments.find((d) => d.id === node.id) ?? null : null;
+
+      if (node.kind === "employee") await api.deleteEmployee(node.id);
+      else if (node.kind === "department") await api.deleteDepartment(node.id);
+      setSelectedOrgNodeId(null);
+      if (companyId) await reloadOrgTree(companyId);
+
+      recordUndo({
+        undo: async () => {
+          if (savedEmployee) {
+            await api.createEmployee({
+              company_id: savedEmployee.company_id,
+              name: savedEmployee.name,
+              department_id: savedEmployee.department_id,
+              title: savedEmployee.title,
+              job_level: savedEmployee.job_level,
+              report_to: savedEmployee.report_to,
+              subordinate_count: savedEmployee.subordinate_count,
+              tenure_years: savedEmployee.tenure_years,
+              business_module: savedEmployee.business_module,
+              status: savedEmployee.status,
+              intention: savedEmployee.intention,
+              remark: savedEmployee.remark,
+              contact: savedEmployee.contact,
+              is_key: savedEmployee.is_key,
+            });
+          } else if (savedDepartment) {
+            await api.createDepartment({
+              company_id: savedDepartment.company_id,
+              name: savedDepartment.name,
+              parent_id: savedDepartment.parent_id,
+              leader_id: savedDepartment.leader_id,
+              leader_report_to: savedDepartment.leader_report_to,
+              team_size: savedDepartment.team_size,
+              business_direction: savedDepartment.business_direction,
+              tech_stack: savedDepartment.tech_stack,
+              office_location: savedDepartment.office_location,
+              hc_status: savedDepartment.hc_status,
+              hc_internal_note: savedDepartment.hc_internal_note,
+            });
+          }
+          if (companyId) await reloadOrgTree(companyId);
+        },
+        redo: async () => {
+          if (node.kind === "employee") await api.deleteEmployee(node.id);
+          else if (node.kind === "department") await api.deleteDepartment(node.id);
+          if (companyId) await reloadOrgTree(companyId);
+        },
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "删除失败");
+    }
+  }
+
+  async function updateOrgEmployeeField(id: string, changes: UpdateOrgEmployeeInput) {
+    setError(null);
+    try {
+      await api.updateEmployee(id, changes);
+      if (selectedCompanyId) await reloadOrgTree(selectedCompanyId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存失败");
+    }
+  }
+
+  async function updateOrgDepartmentField(id: string, changes: UpdateOrgDepartmentInput) {
+    setError(null);
+    try {
+      await api.updateDepartment(id, changes);
+      if (selectedCompanyId) await reloadOrgTree(selectedCompanyId);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "保存失败");
+    }
+  }
+
+  async function deleteCompany(companyId: string) {
+    setError(null);
+    try {
+      await api.deleteCompany(companyId);
+      setCompanies((current) => current.filter((c) => c.id !== companyId));
+      if (selectedCompanyId === companyId) {
+        setSelectedCompanyId(null);
+        setSelectedOrgNodeId(null);
+        setOrgTree(null);
+        setDepartments([]);
+        setEmployees([]);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "删除公司失败");
+    }
+  }
+
+  async function moveOrgNode(source: OrgTreeNode, target: OrgTreeNode) {
+    if (!selectedCompanyId) return;
+    const companyId = selectedCompanyId;
+    setError(null);
+    try {
+      const sourceEmployee = source.kind === "employee" ? employees.find((e) => e.id === source.id) ?? null : null;
+      const sourceDepartment = source.kind === "department" ? departments.find((d) => d.id === source.id) ?? null : null;
+      const oldReportTo = sourceEmployee?.report_to ?? null;
+      const oldDepartmentId = sourceEmployee?.department_id ?? null;
+      const oldParentId = sourceDepartment?.parent_id ?? null;
+
+      if (source.kind === "employee" && target.kind === "employee") {
+        await api.updateEmployee(source.id, { report_to: target.id });
+      } else if (source.kind === "employee" && target.kind === "department") {
+        await api.updateEmployee(source.id, { department_id: target.id });
+      } else if (source.kind === "department" && target.kind === "department") {
+        await api.updateDepartment(source.id, { parent_id: target.id });
+      } else {
+        return;
+      }
+      await reloadOrgTree(companyId);
+
+      recordUndo({
+        undo: async () => {
+          if (source.kind === "employee") {
+            const changes: UpdateOrgEmployeeInput = {};
+            if (target.kind === "employee") changes.report_to = oldReportTo;
+            else if (target.kind === "department") changes.department_id = oldDepartmentId;
+            await api.updateEmployee(source.id, changes);
+          } else if (source.kind === "department") {
+            await api.updateDepartment(source.id, { parent_id: oldParentId });
+          }
+          await reloadOrgTree(companyId);
+        },
+        redo: async () => {
+          if (source.kind === "employee" && target.kind === "employee") {
+            await api.updateEmployee(source.id, { report_to: target.id });
+          } else if (source.kind === "employee" && target.kind === "department") {
+            await api.updateEmployee(source.id, { department_id: target.id });
+          } else if (source.kind === "department" && target.kind === "department") {
+            await api.updateDepartment(source.id, { parent_id: target.id });
+          }
+          await reloadOrgTree(companyId);
+        },
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "移动失败");
+    }
+  }
+
+  function recordUndo(entry: { undo: () => Promise<void>; redo: () => Promise<void> }) {
+    undoStackRef.current.push(entry);
+    redoStackRef.current = [];
+  }
+
+  async function undo() {
+    const entry = undoStackRef.current.pop();
+    if (!entry) return;
+    setError(null);
+    try {
+      await entry.undo();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "撤销失败");
+    }
+    redoStackRef.current.push(entry);
+  }
+
+  async function redo() {
+    const entry = redoStackRef.current.pop();
+    if (!entry) return;
+    setError(null);
+    try {
+      await entry.redo();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "重做失败");
+    }
+    undoStackRef.current.push(entry);
   }
 
   async function searchBd(event: FormEvent) {
     event.preventDefault();
     if (!bdQuery.trim()) return;
     setError(null);
+    setBdLoading(true);
+    setBdProgress(null);
     try {
-      setBdLeads(await api.searchBdLeads(bdQuery.trim(), 20));
+      const result = await api.runBdAgentStream(bdQuery.trim(), "text", 10, (p) => setBdProgress(p));
+      setBdSessionId(result.session_id);
+      setBdLeads(sortLeadsByConfidence(result.leads));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "线索搜索失败");
+    } finally {
+      setBdLoading(false);
+      setBdProgress(null);
     }
   }
 
-  async function loadDashboard() {
+  async function followUpBd(event: FormEvent) {
+    event.preventDefault();
+    if (!bdFollowUp.trim() || !bdSessionId) return;
     setError(null);
+    setBdLoading(true);
     try {
-      setDashboard(await api.dashboardOverview());
+      const result = await api.followUpBdAgent(bdSessionId, bdFollowUp.trim(), 10);
+      setBdLeads((prev) => sortLeadsByConfidence([...prev, ...result.leads]));
+      setBdFollowUp("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "看板加载失败");
+      setError(caught instanceof Error ? caught.message : "追问失败");
+    } finally {
+      setBdLoading(false);
     }
   }
 
-  async function openCandidateDetail(item: CandidateSearchItem) {
-    setSelected(item);
-    setActiveCaseId(null);
-    setCaseEvents([]);
-    setSelectedContact(null);
-    setResumeRevisions([]);
-    setCorrectedName("");
-    setLastCorrectionId(null);
-    setCorrectionMessage("");
-    setError(null);
-    try {
-      setSelectedCases(await api.listCases(item.candidate_id));
-      setReverseMatches(await api.reverseMatch(item.candidate_id));
-      const contact = await api.getCandidateContact(item.candidate_id);
-      setSelectedContact(contact);
-      setContactEmail(contact.email ?? "");
-      setContactPhone(contact.phone ?? "");
-      setResumeRevisions(await api.listResumeRevisions(item.candidate_id));
-    } catch {
-      // 详情抽屉仍可打开，即使流程数据加载失败。
+  async function loadDashboard(filters = dashboardFilters, granularity = trendGranularity) {
+    if (filters.date_from && filters.date_to && filters.date_from > filters.date_to) {
+      setError("开始日期不能晚于结束日期");
+      return;
     }
-  }
-
-  async function switchResumeRevision(revisionId: string) {
+    const request = ++dashboardRequest.current;
     setError(null);
+    setDashboardBusy(true);
     try {
-      const current = await api.switchResumeRevision(revisionId);
-      setResumeRevisions((revisions) => revisions.map((revision) => ({
-        ...revision,
-        is_current: revision.revision_id === current.revision_id
-      })));
+      const [overview, byJd, trend] = await Promise.all([
+        api.dashboardOverview(filters),
+        api.dashboardByJd(filters),
+        api.dashboardTrend(granularity, filters),
+      ]);
+      if (request !== dashboardRequest.current) return;
+      setDashboardFilters(filters);
+      setTrendGranularity(granularity);
+      setDashboard(overview);
+      setDashboardByJdData(byJd);
+      setDashboardTrend(trend);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "简历版本切换失败");
+      if (request === dashboardRequest.current) setError(caught instanceof Error ? caught.message : "看板加载失败");
+    } finally {
+      if (request === dashboardRequest.current) setDashboardBusy(false);
     }
   }
 
-  async function correctCandidateName() {
-    if (!selected || !correctedName.trim()) return;
-    setError(null);
-    try {
-      const correction = await api.applyCorrection({
-        entityType: "candidate",
-        entityId: selected.candidate_id,
-        fieldName: "display_name",
-        newValue: correctedName.trim(),
-        reason: "用户在候选人详情中更正姓名"
-      });
-      setLastCorrectionId(correction.correction_id);
-      setCorrectionMessage("更正已保存");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "资料更正失败");
-    }
-  }
-
-  async function undoCandidateCorrection() {
-    if (!lastCorrectionId) return;
-    setError(null);
-    try {
-      await api.undoCorrection(lastCorrectionId);
-      setLastCorrectionId(null);
-      setCorrectionMessage("更正已撤销");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "撤销更正失败");
-    }
-  }
-
-  async function deleteSelectedCandidate() {
-    if (!selected) return;
-    setError(null);
-    try {
-      await api.softDelete("candidate", selected.candidate_id);
-      setResults((items) => items.filter((item) => item.candidate_id !== selected.candidate_id));
-      setSelected(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "移入回收站失败");
-    }
-  }
-
-  async function saveContact() {
-    if (!selected) return;
-    setError(null);
-    try {
-      const updated = await api.updateCandidateContact(selected.candidate_id, {
-        email: contactEmail.trim() || null,
-        phone: contactPhone.trim() || null
-      });
-      setSelectedContact(updated);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "联系方式保存失败");
-    }
-  }
-
-  async function loadCaseEvents(caseId: string) {
-    setActiveCaseId(caseId);
-    setError(null);
-    try {
-      setCaseEvents(await api.getCaseEvents(caseId));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "流程记录加载失败");
-    }
-  }
-
-  async function advanceStage(caseId: string, stage: string) {
-    setError(null);
-    try {
-      const updated = await api.advanceCase(caseId, stage);
-      setSelectedCases((current) =>
-        current.map((c) => (c.id === updated.id ? updated : c))
-      );
-      await loadCaseEvents(caseId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "推进失败");
-    }
-  }
-
-  async function undoStage(caseId: string) {
-    setError(null);
-    try {
-      const updated = await api.undoCase(caseId);
-      setSelectedCases((current) =>
-        current.map((c) => (c.id === updated.id ? updated : c))
-      );
-      await loadCaseEvents(caseId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "撤销失败");
-    }
-  }
-
-  async function createCaseFromReverse(match: ReverseMatchItem) {
-    if (!selected) return;
-    setError(null);
-    try {
-      const created = await api.createCase(selected.candidate_id, match.jd_id);
-      setSelectedCases((current) =>
-        current.some((c) => c.id === created.id) ? current : [created, ...current]
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建流程失败");
-    }
+  async function reloadTrend(granularity: string) {
+    await loadDashboard(dashboardFilters, granularity);
   }
 
   async function loadDeleted() {
@@ -858,15 +2272,6 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function exportMatch(runId: string) {
-    setError(null);
-    try {
-      await api.exportMatchRun(runId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "导出失败");
-    }
-  }
-
   async function loadBackups() {
     setError(null);
     try {
@@ -889,8 +2294,11 @@ export function App({ api }: { api: RecruitmentApi }) {
   async function restoreBackupItem(filename: string) {
     setError(null);
     try {
-      await api.restoreBackup(filename);
+      const restored = await api.restoreBackup(filename);
       setBackups(await api.listBackups());
+      if (restored.restart_required) {
+        setPortableMessage("恢复已准备：请从托盘退出后重新启动。重启后会同步搜索索引，期间部分结果暂不可用。");
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "恢复失败");
     }
@@ -921,43 +2329,6 @@ export function App({ api }: { api: RecruitmentApi }) {
         : "便携备份恢复校验未通过");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "便携备份恢复失败");
-    }
-  }
-
-  async function loadReminders() {
-    setError(null);
-    try {
-      setReminders(await api.listReminders());
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "提醒加载失败");
-    }
-  }
-
-  async function createReminderItem(event: FormEvent) {
-    event.preventDefault();
-    if (!reminderTitle.trim() || !reminderAt.trim()) return;
-    setError(null);
-    try {
-      const created = await api.createReminder({
-        title: reminderTitle.trim(),
-        remind_at: reminderAt,
-        note: ""
-      });
-      setReminders((current) => [created, ...current]);
-      setReminderTitle("");
-      setReminderAt("");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建提醒失败");
-    }
-  }
-
-  async function dismissReminderItem(id: string) {
-    setError(null);
-    try {
-      await api.dismissReminder(id);
-      setReminders((current) => current.filter((r) => r.id !== id));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "处理提醒失败");
     }
   }
 
@@ -1000,7 +2371,7 @@ export function App({ api }: { api: RecruitmentApi }) {
 
     function onEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setSelected(null);
+        setPreviewUrl(null);
       }
     }
 
@@ -1012,12 +2383,53 @@ export function App({ api }: { api: RecruitmentApi }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (activeNav === 0) void loadCandidates();
+    if (activeNav === 1) void loadJds();
+    if (activeNav === 2 || activeNav === 6) void loadJds();
+    if (activeNav === 2) void loadDashboard();
+    if (activeNav === 6) void loadCases();
+  }, [activeNav]);
+
+  const displayOrgTree = useMemo(
+    () => (orgTree ? filterOrgTree(orgTree, orgSearch, orgFilterKind, orgFilterKey) : null),
+    [orgTree, orgSearch, orgFilterKind, orgFilterKey]
+  );
+
+  const selectedOrgNode = useMemo(() => {
+    if (!orgTree || !selectedOrgNodeId) return null;
+    function find(node: OrgTreeNode): OrgTreeNode | null {
+      if (node.id === selectedOrgNodeId) return node;
+      for (const child of node.children) {
+        const hit = find(child);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    return find(orgTree);
+  }, [orgTree, selectedOrgNodeId]);
+
+  const selectedOrgEmployee = selectedOrgNode?.kind === "employee"
+    ? employees.find((e) => e.id === selectedOrgNode.id) ?? null
+    : null;
+  const selectedOrgDepartment = selectedOrgNode?.kind === "department"
+    ? departments.find((d) => d.id === selectedOrgNode.id) ?? null
+    : null;
+
+  const filteredJds = jds.filter((jd) => {
+    if (jdFilter.title && !(jd.title || "").toLowerCase().includes(jdFilter.title.trim().toLowerCase())) return false;
+    if (jdFilter.company && !(jd.company || "").toLowerCase().includes(jdFilter.company.trim().toLowerCase())) return false;
+    if (jdFilter.status && jd.jd_status !== jdFilter.status) return false;
+    if (jdFilter.ai && jdAiLabel(jd.ai_category) !== jdFilter.ai) return false;
+    return true;
+  });
+
   return (
-    <div className="app-shell">
+    <div className={navCollapsed ? "app-shell nav-collapsed" : "app-shell"}>
       <aside className="navigation" aria-label="主导航">
         <div className="brand">
           <span className="brand-mark">K</span>
-          <div><strong>科锐人才库</strong><small>本地招聘工作台</small></div>
+          <div><strong>人才库</strong><small>本地招聘工作台</small></div>
         </div>
         <nav>
           {navigation.map((item, index) => (
@@ -1035,7 +2447,19 @@ export function App({ api }: { api: RecruitmentApi }) {
 
       <main className="workspace">
         <header className="topbar">
+          <button
+            className="nav-toggle"
+            aria-label={navCollapsed ? "展开导航" : "收起导航"}
+            onClick={() => setNavCollapsed((v) => !v)}
+          >
+            {navCollapsed ? "»" : "«"}
+          </button>
           <div><h1>{navigation[activeNav]}</h1><p>结构化管理与智能匹配候选人</p></div>
+          <div className="shortcut-hints" aria-label="系统快捷键">
+            <span><kbd>Ctrl K</kbd>搜索</span>
+            <span><kbd>Ctrl 1-{navigation.length}</kbd>切换</span>
+            <span><kbd>Esc</kbd>取消</span>
+          </div>
           {activeNav === 0 && (
             <label className="import-button">
               导入简历
@@ -1051,6 +2475,7 @@ export function App({ api }: { api: RecruitmentApi }) {
         </header>
 
         {error && <div className="error-banner" role="alert">{error}</div>}
+        {notice && <div className="notice-banner" role="status">{notice}</div>}
 
         {activeNav === 0 && (
           <>
@@ -1065,64 +2490,70 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <kbd>Ctrl K</kbd>
                 <button disabled={searching} type="submit">{searching ? "搜索中" : "搜索"}</button>
               </form>
-              <div className="quick-filters">
-                <button>工作年限</button><button>学历</button><button>地点</button><button>学校等级</button>
-              </div>
+              <details className="search-filters">
+                <summary>精确筛选</summary>
+                <div className="search-filter-grid">
+                  <label>最低工作年限<input aria-label="最低工作年限" type="number" min="0" max="80" value={searchFilterDraft.minYears} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, minYears: e.target.value })} /></label>
+                  <label>最高工作年限<input aria-label="最高工作年限" type="number" min="0" max="80" value={searchFilterDraft.maxYears} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, maxYears: e.target.value })} /></label>
+                  <label>学历<select aria-label="最低学历" value={searchFilterDraft.degree} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, degree: e.target.value })}>
+                    <option value="">由查询语句决定</option><option value="COLLEGE">大专</option><option value="BACHELOR">本科</option><option value="MASTER">硕士</option><option value="DOCTOR">博士</option>
+                  </select></label>
+                  <label>现居城市<input aria-label="现居城市" placeholder="上海、苏州" value={searchFilterDraft.locations} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, locations: e.target.value })} /></label>
+                  <label>意向城市<input aria-label="意向城市" placeholder="北京、深圳" value={searchFilterDraft.preferredLocations} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, preferredLocations: e.target.value })} /></label>
+                  <label>学校等级<input aria-label="学校等级" placeholder="985 / 211" value={searchFilterDraft.schoolLevel} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, schoolLevel: e.target.value })} /></label>
+                  <label>QS最高排名<input aria-label="QS最高排名" type="number" min="1" value={searchFilterDraft.maxQsRank} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, maxQsRank: e.target.value })} /></label>
+                  <label>排除技能<input aria-label="排除技能" placeholder="外包、PHP" value={searchFilterDraft.excludeSkills} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, excludeSkills: e.target.value })} /></label>
+                </div>
+                <button type="button" className="detail-button" onClick={() => setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "" })}>清除筛选</button>
+              </details>
               <form className="folder-import" onSubmit={(event) => void importFolderPath(event)}>
                 <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="导入文件夹路径，如 D:\简历库" aria-label="文件夹路径" />
                 <button type="submit">导入文件夹</button>
               </form>
+              {batchProgress && (
+                <div className="batch-progress">
+                  <span>解析进度：{batchProgress.done}/{batchProgress.total}</span>
+                  <progress max={batchProgress.total || 1} value={batchProgress.done} />
+                </div>
+              )}
             </section>
 
             <section className="content-grid">
               <div className="results-card">
-                <div className="section-heading"><h2>候选人</h2><span>{results.length} 条结果</span></div>
+                <div className="section-heading">
+                  <h2>候选人</h2>
+                  <button className="detail-button" onClick={() => void loadCandidates(1)}>显示候选人</button>
+                  <span>{results.length} 条结果</span>
+                </div>
                 {results.length === 0 ? (
-                  <div className="empty-state"><strong>从一次搜索开始</strong><p>输入技能、经历或自然语言条件查找人才。</p></div>
+                  <div className="empty-state"><strong>从一次搜索开始</strong><p>输入技能、经历或自然语言条件查找人才，或点击「显示全部候选人」查看已导入人才。</p></div>
                 ) : (
-                  <table>
-                    <thead><tr><th>匹配证据</th><th>经验</th><th>学历</th><th>地点</th><th /></tr></thead>
-                    <tbody>
-                      {results.map((item) => (
-                        <tr key={item.candidate_id}>
-                          <td><strong>{item.content}</strong><small>{item.matched_channels.join(" + ")}</small></td>
-                          <td>{item.total_years ?? "—"} 年</td>
-                          <td>{item.highest_degree ?? "待核验"}</td>
-                          <td>{item.location ?? "待核验"}</td>
-                          <td><button className="detail-button" onClick={() => void openCandidateDetail(item)}>查看详情</button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  resultsTable
+                )}
+                {candidates.length > 0 && (
+                  <>
+                    <div className="section-heading"><h3>候选人（共 {candidateTotal} 人）</h3></div>
+                    {candidatesTable}
+                    <div className="pagination">
+                      <button className="detail-button" disabled={candidatePage <= 1} onClick={() => void loadCandidates(candidatePage - 1)}>上一页</button>
+                      {pageWindow(candidatePage, candidateTotalPages).map((page, index) =>
+                        typeof page === "number" ? (
+                          <button
+                            key={`page-${page}-${index}`}
+                            className={page === candidatePage ? "page-current" : "page-number"}
+                            onClick={() => void loadCandidates(page)}
+                          >
+                            {page}
+                          </button>
+                        ) : (
+                          <span key={`ellipsis-${index}`} className="page-ellipsis">…</span>
+                        )
+                      )}
+                      <button className="detail-button" disabled={candidatePage >= candidateTotalPages} onClick={() => void loadCandidates(candidatePage + 1)}>下一页</button>
+                    </div>
+                  </>
                 )}
               </div>
-
-              <aside className="task-center" aria-label="任务中心">
-                <div className="section-heading">
-                  <h2>任务中心</h2>
-                  <button className="detail-button" onClick={() => void loadTasks()}>刷新任务</button>
-                </div>
-                {tasks.length === 0 ? <p className="muted">暂无后台任务</p> : tasks.map((task) => (
-                  <article key={task.id}>
-                    <strong>{taskLabel(task)}</strong><code>{task.id}</code>
-                    <progress max="100" value={task.progress} />
-                    <div className="case-actions">
-                      {(["PENDING", "QUEUED", "RETRY_WAIT"] as const).includes(task.status as "PENDING" | "QUEUED" | "RETRY_WAIT") && (
-                        <button className="detail-button" onClick={() => void controlTask(task, "pause")}>暂停</button>
-                      )}
-                      {task.status === "PAUSED" && (
-                        <button className="detail-button" onClick={() => void controlTask(task, "resume")}>继续</button>
-                      )}
-                      {(task.status === "FAILED" || task.status === "DEAD_LETTER") && (
-                        <button className="detail-button" onClick={() => void controlTask(task, "retry")}>重试</button>
-                      )}
-                      {!["SUCCESS", "CANCELLED", "DEAD_LETTER"].includes(task.status) && (
-                        <button className="detail-button" onClick={() => void controlTask(task, "cancel")}>取消</button>
-                      )}
-                    </div>
-                  </article>
-                ))}
-              </aside>
             </section>
           </>
         )}
@@ -1130,10 +2561,6 @@ export function App({ api }: { api: RecruitmentApi }) {
         {activeNav === 1 && (
           <section className="jd-panel">
             <form className="jd-form" onSubmit={(event) => void submitJd(event)}>
-              <div className="jd-row">
-                <input value={jdCompany} onChange={(e) => setJdCompany(e.target.value)} placeholder="公司名称" aria-label="JD 公司" />
-                <input value={jdTitle} onChange={(e) => setJdTitle(e.target.value)} placeholder="岗位名称" aria-label="JD 岗位" />
-              </div>
               <textarea value={jdSource} onChange={(e) => setJdSource(e.target.value)} placeholder="粘贴 JD 原文…" aria-label="JD 原文" />
               <div className="case-actions">
                 <button type="submit">导入并解析</button>
@@ -1148,97 +2575,206 @@ export function App({ api }: { api: RecruitmentApi }) {
                 </label>
               </div>
             </form>
-            {jdResult && (
+            {jdResult.length > 0 && (
               <div className="jd-result" role="status">
-                <strong>导入成功</strong>
-                <code>{jdResult.revision_id}</code>
+                <strong>导入成功 {jdResult.length} 个岗位</strong>
+                {jdResult.map((item) => (
+                  <code key={item.revision_id}>{item.revision_id}</code>
+                ))}
               </div>
             )}
+            <div className="results-card">
+              <div className="section-heading">
+                <h2>已导入 JD</h2>
+                <button className="detail-button" onClick={() => void loadJds()}>刷新列表</button>
+              </div>
+              <div className="jd-filters">
+                <input
+                  aria-label="筛选岗位名称"
+                  placeholder="筛选岗位"
+                  value={jdFilter.title}
+                  onChange={(event) => setJdFilter({ ...jdFilter, title: event.target.value })}
+                />
+                <input
+                  aria-label="筛选公司名称"
+                  placeholder="筛选公司"
+                  value={jdFilter.company}
+                  onChange={(event) => setJdFilter({ ...jdFilter, company: event.target.value })}
+                />
+                <select
+                  aria-label="筛选岗位状态"
+                  value={jdFilter.status}
+                  onChange={(event) => setJdFilter({ ...jdFilter, status: event.target.value })}
+                >
+                  <option value="">全部状态</option>
+                  {JD_STATUS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label="筛选 AI 分类"
+                  value={jdFilter.ai}
+                  onChange={(event) => setJdFilter({ ...jdFilter, ai: event.target.value })}
+                >
+                  <option value="">全部 AI 分类</option>
+                  {AI_CATEGORY_OPTIONS.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+              {jds.length === 0 ? (
+                <p className="muted">暂无 JD，先在上方导入。</p>
+              ) : filteredJds.length === 0 ? (
+                <p className="muted">没有符合筛选条件的 JD。</p>
+              ) : (
+                <table>
+                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>AI/非AI</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {filteredJds.map((jd) => (
+                      <Fragment key={jd.revision_id}>
+                        <tr>
+                          <td><strong><EditableCell value={jd.title || ""} onSave={(next) => updateJdFieldValue(jd.jd_id, "title", next.trim())} /></strong></td>
+                          <td><EditableCell value={jd.company || ""} onSave={(next) => updateJdFieldValue(jd.jd_id, "company", next.trim())} /></td>
+                          <td>
+                            <select
+                              aria-label="岗位状态"
+                              className={`jd-status-select ${jd.jd_status.toLowerCase()}`}
+                              value={jd.jd_status}
+                              onChange={(event) => void updateJdStatus(jd.jd_id, event.target.value)}
+                            >
+                              {JD_STATUS_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td><EditableCell value={jdAiLabel(jd.ai_category)} onSave={(next) => updateJdFieldValue(jd.jd_id, "ai_category", next.trim())} /></td>
+                          <td>{jdRequirementLabel(jd.parsed_data)}</td>
+                          <td>
+                            <div className="case-actions">
+                              <button className="detail-button" onClick={() => void runJdMatch(jd)}>匹配</button>
+                              <button className="detail-button" onClick={() => toggleJdSource(jd.revision_id)}>
+                                {openJdSource[jd.revision_id] ? "收起原文" : "查看详情"}
+                              </button>
+                              <button className="detail-button danger" onClick={() => void deleteJd(jd)}>删除</button>
+                            </div>
+                          </td>
+                        </tr>
+                        {openJdSource[jd.revision_id] && jd.source_text && (
+                          <tr>
+                            <td colSpan={6}><pre className="jd-source-text">{jd.source_text}</pre></td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </section>
         )}
 
         {activeNav === 2 && (
           <section className="jd-panel">
-            <form className="jd-form" onSubmit={(event) => void runMatch(event)}>
-              <input value={matchRevision} onChange={(e) => setMatchRevision(e.target.value)} placeholder="JD 版本 ID" aria-label="匹配 JD 版本" />
-              <button type="submit">开始匹配</button>
+            <form className="case-filter-bar dashboard-filters" onSubmit={(event) => { event.preventDefault(); void loadDashboard(dashboardDraft); }}>
+              <label className="case-filter-field"><span>公司</span><select aria-label="看板公司" value={dashboardDraft.company || ""} onChange={(event) => setDashboardDraft({ ...dashboardDraft, company: event.target.value || undefined, jd_id: undefined })}>
+                <option value="">全部公司</option>
+                {[...new Set(jds.map((jd) => jd.company))].sort().map((company) => <option key={company}>{company}</option>)}
+              </select></label>
+              <label className="case-filter-field"><span>岗位</span><select aria-label="看板岗位" value={dashboardDraft.jd_id || ""} onChange={(event) => setDashboardDraft({ ...dashboardDraft, jd_id: event.target.value || undefined })}>
+                <option value="">全部岗位</option>
+                {jds.filter((jd) => !dashboardDraft.company || jd.company === dashboardDraft.company).map((jd) => <option key={jd.jd_id} value={jd.jd_id}>{jd.company} · {jd.title}</option>)}
+              </select></label>
+              <label className="case-filter-field"><span>开始日期</span><input aria-label="开始日期" type="date" value={dashboardDraft.date_from || ""} onChange={(event) => setDashboardDraft({ ...dashboardDraft, date_from: event.target.value || undefined })} /></label>
+              <label className="case-filter-field"><span>结束日期</span><input aria-label="结束日期" type="date" value={dashboardDraft.date_to || ""} onChange={(event) => setDashboardDraft({ ...dashboardDraft, date_to: event.target.value || undefined })} /></label>
+              <button type="submit" className="import-button" disabled={dashboardBusy}>应用筛选</button>
+              <button type="button" className="import-button" disabled={dashboardBusy} onClick={() => void loadDashboard()}>刷新看板</button>
+              <button type="button" className="detail-button" disabled={dashboardBusy || !dashboard} onClick={() => void api.dashboardExport(dashboardFilters).catch((caught) => setError(caught instanceof Error ? caught.message : "导出失败"))}>导出 Excel</button>
             </form>
-            <form className="jd-form" onSubmit={(event) => void runBatchMatch(event)}>
-              <textarea
-                value={batchRevisions}
-                onChange={(event) => setBatchRevisions(event.target.value)}
-                placeholder="每行一个 JD 版本 ID"
-                aria-label="批量 JD 版本"
-              />
-              <button type="submit">批量匹配</button>
-            </form>
-            {batchMatchCount !== null && <p role="status">已完成 {batchMatchCount} 个 JD 的批量匹配</p>}
-            {matchRun && (
-              <div className="results-card">
-                <div className="section-heading">
-                  <h2>匹配结果</h2>
-                  <span>{matchRun.items.length} 人</span>
-                  <button className="detail-button" onClick={() => void exportMatch(matchRun.run_id)}>导出 Excel</button>
-                </div>
-                {matchRun.items.length === 0 ? (
-                  <div className="empty-state"><strong>暂无匹配候选人</strong></div>
-                ) : (
-                  <table>
-                    <thead><tr><th>候选人</th><th>得分</th><th>经验</th><th>学历</th><th>处理</th></tr></thead>
-                    <tbody>
-                      {matchRun.items.map((item) => (
-                        <tr key={item.candidate_id}>
-                          <td><strong>{item.content}</strong></td>
-                          <td>{item.score.toFixed(3)}</td>
-                          <td>{item.total_years ?? "—"} 年</td>
-                          <td>{item.highest_degree ?? "待核验"}</td>
-                          <td>
-                            {item.result_id ? (
-                              <div className="case-actions">
-                                {matchMarks[item.result_id] && <span>{matchMarks[item.result_id]}</span>}
-                                <button className="detail-button" onClick={() => void markMatch(item.result_id!, "短名单")}>加入短名单</button>
-                                <button className="detail-button" onClick={() => void markMatch(item.result_id!, "排除")}>排除</button>
-                              </div>
-                            ) : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-        {activeNav === 3 && (
-          <section className="jd-panel">
-            <div className="section-heading"><h2>招聘看板</h2><button className="import-button" onClick={() => void loadDashboard()}>刷新看板</button></div>
+            <p className="dashboard-hint">统计按上海自然日；导出和趋势使用最近一次已应用的筛选。{dashboardBusy ? "正在加载…" : ""}</p>
             {dashboard ? (
               <>
                 <div className="health-grid">
+                  <div className="health-card"><small>候选人总数</small><strong>{dashboard.candidate_total}</strong></div>
+                  <div className="health-card"><small>每月新增候选人</small><strong>{dashboard.monthly_new_candidates.length ? dashboard.monthly_new_candidates[dashboard.monthly_new_candidates.length - 1].count : 0}</strong></div>
                   <div className="health-card"><small>推荐总数</small><strong>{dashboard.recommendation_total}</strong></div>
-                  <div className="health-card"><small>候选人总数</small><strong>{dashboard.health.candidate_total}</strong></div>
-                  <div className="health-card"><small>已解析简历</small><strong>{dashboard.health.ready_total}</strong></div>
-                  <div className="health-card"><small>解析失败</small><strong>{dashboard.health.parse_failed}</strong></div>
-                  <div className="health-card"><small>近30天新增</small><strong>{dashboard.health.recent_30d}</strong></div>
-                  <div className="health-card"><small>开放岗位</small><strong>{dashboard.health.open_jd_total}</strong></div>
+                  <div className="health-card"><small>offer 总数</small><strong>{dashboard.offer_total}</strong></div>
+                  <div className="health-card"><small>当前有效 offer</small><strong>{dashboard.active_offer_total}</strong></div>
+                  <div className="health-card"><small>已入职人数</small><strong>{dashboard.onboarded_total}</strong></div>
                 </div>
 
-                {dashboard.funnel.length > 0 && (
-                  <div className="results-card">
-                    <div className="section-heading"><h2>面试漏斗</h2></div>
-                    <div className="funnel-bars">
-                      {dashboard.funnel.map((item) => (
-                        <div key={item.stage} className="funnel-bar">
-                          <span>{item.stage}</span>
-                          <div className="funnel-track"><div className="funnel-fill" style={{ width: `${Math.max(4, item.count * 20)}px` }} /></div>
-                          <strong>{item.count}</strong>
-                        </div>
-                      ))}
+                <div className="results-card chart-card">
+                  <div className="section-heading">
+                    <h2>推荐量 / offer 量趋势</h2>
+                    <div className="case-actions">
+                      <div className="trend-toggle" role="group" aria-label="趋势粒度">
+                        {(["week", "month", "quarter"] as const).map((granularity) => (
+                          <button
+                            key={granularity}
+                            disabled={dashboardBusy}
+                            className={trendGranularity === granularity ? "trend-toggle-btn active" : "trend-toggle-btn"}
+                            onClick={() => void reloadTrend(granularity)}
+                          >
+                            {granularity === "week" ? "周" : granularity === "month" ? "月" : "季度"}
+                          </button>
+                        ))}
+                      </div>
+                      <button className="detail-button" onClick={() => trendSvgRef.current && exportSvgAsPng(trendSvgRef.current, "趋势图.png")}>导出图片</button>
                     </div>
                   </div>
-                )}
+                  <div className="chart-box">
+                    {renderTrendChart(dashboardTrend, trendSvgRef)}
+                  </div>
+                </div>
+
+                <div className="results-card chart-card">
+                  <div className="section-heading">
+                    <h2>每岗位每轮通过率</h2>
+                    <button className="detail-button" onClick={() => passRateSvgRef.current && exportSvgAsPng(passRateSvgRef.current, "每轮通过率.png")}>导出图片</button>
+                  </div>
+                  <div className="chart-box">
+                    {renderPassRateChart(dashboardByJdData, passRateSvgRef)}
+                  </div>
+                  {dashboardByJdData.length > 0 && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>岗位</th>
+                          <th>轮次</th>
+                          <th>进入</th>
+                          <th>通过</th>
+                          <th>未通过</th>
+                          <th>待反馈</th>
+                          <th>通过率</th>
+                          <th>最终 offer 率</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboardByJdData.flatMap((jd) => {
+                          if (jd.rounds.length === 0) {
+                            return (
+                              <tr key={jd.jd_id}>
+                                <td>{jd.company} · {jd.title}</td>
+                                <td colSpan={7}>暂无面试数据</td>
+                              </tr>
+                            );
+                          }
+                          return jd.rounds.map((round, index) => (
+                            <tr key={`${jd.jd_id}-${round.round_key ?? `${round.round_no}-${index}`}`}>
+                              {index === 0 && <td rowSpan={jd.rounds.length}>{jd.company} · {jd.title}</td>}
+                              <td>{round.round_name}</td>
+                              <td>{round.entered}</td>
+                              <td>{round.passed}</td>
+                              <td>{round.failed}</td>
+                              <td>{round.pending}</td>
+                              <td>{round.pass_rate === null ? "—" : `${(round.pass_rate * 100).toFixed(1)}%`}</td>
+                              {index === 0 && <td rowSpan={jd.rounds.length}>{jd.final_offer_rate === null ? "—" : `${(jd.final_offer_rate * 100).toFixed(1)}%`}</td>}
+                            </tr>
+                          ));
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </>
             ) : (
               <div className="empty-state"><strong>加载看板数据</strong><p>点击「刷新看板」查看推荐统计与面试漏斗。</p></div>
@@ -1246,95 +2782,196 @@ export function App({ api }: { api: RecruitmentApi }) {
           </section>
         )}
 
-        {activeNav === 4 && (
+        {activeNav === 6 && (
           <section className="jd-panel">
-            <form className="jd-form" onSubmit={(event) => void createProject(event)}>
-              <div className="jd-row">
-                <input value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="项目名称，如：互联网公司图谱" aria-label="项目名称" />
-                <button type="submit">新建项目</button>
-              </div>
-            </form>
-            <button className="import-button" onClick={() => void loadProjects()}>刷新项目</button>
+            <div className="section-heading"><h2>流程列表</h2><button className="detail-button" onClick={() => void loadCases()}>刷新流程</button></div>
+            <div className="case-filter-bar">
+              <label className="case-filter-field">
+                <span>岗位</span>
+                <select aria-label="流程岗位" value={caseJdFilter} onChange={(event) => { setCaseJdFilter(event.target.value); void loadCases(event.target.value); }}>
+                  <option value="">全部岗位</option>{jds.map((jd) => <option key={jd.jd_id} value={jd.jd_id}>{jd.company} · {jd.title}</option>)}
+                </select>
+              </label>
+              <span className="case-filter-count">共 {cases.length} 条流程</span>
+            </div>
+            {cases.length === 0 ? <p>暂无招聘流程，可从匹配结果建立流程。</p> : <table><thead><tr><th>候选人</th><th>岗位</th><th>阶段</th><th>操作</th></tr></thead><tbody>
+              {cases.map((item) => <tr key={item.id}><td>{item.candidate_name || item.candidate_id}</td><td>{item.company || ""} · {item.jd_title || item.jd_id}</td><td>{item.stage}</td><td><button className="detail-button" onClick={() => void openCaseDrawer(item.id)}>查看流程</button></td></tr>)}
+            </tbody></table>}
+          </section>
+        )}
 
-            {projects.length > 0 && (
-              <div className="mapping-layout">
-                <div className="mapping-projects">
-                  <div className="section-heading"><h2>项目</h2></div>
-                  {projects.map((p) => (
-                    <button
-                      key={p.id}
-                      className={p.id === selectedProjectId ? "nav-item active" : "nav-item"}
-                      onClick={() => void selectProject(p.id)}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
+        {activeNav === 3 && (
+          <section className="jd-panel">
+            <div className="mapping-help">
+              <strong>操作：</strong>Tab 新增子节点（部门→子部门 · 人员→下属）· Enter 新增同级 · 「＋人员」在部门下加人 · 双击/F2 改名 · 拖拽调整层级 · Shift 返回上级 · ←/→ 同级切换 · Space 折叠 · Ctrl+Z 撤销
+            </div>
+
+            <div className="mapping-toolbar">
+              <form className="jd-form" onSubmit={(event) => void createCompany(event)}>
+                <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="公司名称，如：字节跳动" aria-label="公司名称" />
+                <button type="submit">新建公司</button>
+              </form>
+              <button className="import-button" onClick={() => void loadCompanies()}>刷新公司</button>
+              {selectedOrgNode && selectedOrgNode.kind !== "company" && (
+                <button className="import-button" onClick={() => void addOrgPerson(selectedOrgNode)}>＋人员</button>
+              )}
+              {selectedCompanyId && (
+                <div className="case-actions">
+                  <button className="detail-button" onClick={() => void undo()}>撤销</button>
+                  <button className="detail-button" onClick={() => void redo()}>重做</button>
+                  <button className="detail-button" onClick={() => void api.exportOrgInternal(selectedCompanyId)}>内部 Excel</button>
+                  <button className="detail-button" onClick={() => void api.exportOrgClient(selectedCompanyId)}>客户 Excel</button>
+                  <button className="detail-button" onClick={() => void api.exportOrgArchPdf(selectedCompanyId)}>架构图 PDF</button>
                 </div>
-                {selectedProjectId && (
-                  <div className="mapping-editor">
-                    <form className="jd-form" onSubmit={(event) => void buildTree(event)}>
-                      <input value={mappingLabel} onChange={(e) => setMappingLabel(e.target.value)} placeholder="快照标签（可选）" aria-label="快照标签" />
-                      <textarea value={mappingText} onChange={(e) => setMappingText(e.target.value)} placeholder={"用缩进表示层级：\n字节跳动\n  技术部\n    后端组\n腾讯"} aria-label="建树文本" />
-                      <button type="submit">生成组织树</button>
-                    </form>
-                    {snapshots.length > 0 && (
-                      <div className="mapping-snapshots">
-                        <div className="section-heading"><h2>快照</h2></div>
-                        {snapshots.map((s) => (
-                          <div key={s.id} className="case-row">
-                            <button className="nav-item" onClick={() => void loadTree(s.id)}>
-                              {s.label}{s.is_current ? "（当前）" : ""}
-                            </button>
-                            <button className="detail-button" onClick={() => void api.exportMappingTree(s.id)}>Excel</button>
-                            <button className="detail-button" onClick={() => void api.exportMappingTreePdf(s.id)}>PDF</button>
-                          </div>
-                        ))}
+              )}
+            </div>
+
+            {companies.length === 0 ? (
+              <div className="empty-state"><strong>还没有公司</strong><p>先在上方新建一家公司，再录入部门与人员。</p></div>
+            ) : (
+              <div className={["mapping-grid", leftCollapsed ? "no-left" : "", rightCollapsed ? "no-right" : ""].join(" ").trim()}>
+                {leftCollapsed ? (
+                  <button className="mapping-rail" onClick={() => setLeftCollapsed(false)} title="展开左侧">»</button>
+                ) : (
+                  <div className="mapping-panel">
+                    <div className="mapping-panel-head">
+                      <h3>公司</h3>
+                      <button className="mapping-collapse" onClick={() => setLeftCollapsed(true)} title="收起左侧">«</button>
+                    </div>
+                    {companies.map((c) => (
+                      <div key={c.id} className="case-row">
+                        <button
+                          className={c.id === selectedCompanyId ? "nav-item active" : "nav-item"}
+                          onClick={() => void selectCompany(c.id)}
+                        >
+                          {c.name}
+                        </button>
+                        <button className="detail-button" onClick={() => void deleteCompany(c.id)}>删除</button>
                       </div>
-                    )}
+                    ))}
+
+                    <h4>搜索</h4>
+                    <input value={orgSearch} onChange={(e) => setOrgSearch(e.target.value)} placeholder="姓名 / 岗位 / 职级" aria-label="搜索节点" />
+
+                    <h4>筛选</h4>
+                    <select value={orgFilterKind} onChange={(e) => setOrgFilterKind(e.target.value)} aria-label="节点类型">
+                      <option value="">全部类型</option>
+                      <option value="department">部门</option>
+                      <option value="employee">人员</option>
+                    </select>
+                    <label className="org-filter-key">
+                      <input type="checkbox" checked={orgFilterKey} onChange={(e) => setOrgFilterKey(e.target.checked)} /> 仅核心岗位
+                    </label>
                   </div>
+                )}
+
+                <OrgMindMap
+                  tree={displayOrgTree}
+                  selectedId={selectedOrgNodeId}
+                  onSelect={(node) => setSelectedOrgNodeId(node.id)}
+                  onRename={(node, name) => void renameOrgNode(node, name)}
+                  onAddChild={(node) => void addOrgChild(node)}
+                  onAddSibling={(node) => void addOrgSibling(node)}
+                  onDelete={(node) => void deleteOrgNode(node)}
+                  onMove={(source, target) => void moveOrgNode(source, target)}
+                  onUndo={() => void undo()}
+                  onRedo={() => void redo()}
+                  pendingEditId={pendingEditId}
+                  onPendingEditConsumed={() => setPendingEditId(null)}
+                />
+
+                {rightCollapsed ? (
+                  <button className="mapping-rail" onClick={() => setRightCollapsed(false)} title="展开右侧">«</button>
+                ) : (
+                  <OrgDetailPanel
+                    node={selectedOrgNode}
+                    employee={selectedOrgEmployee}
+                    department={selectedOrgDepartment}
+                    employees={employees}
+                    departments={departments}
+                    onUpdateEmployee={(id, changes) => void updateOrgEmployeeField(id, changes)}
+                    onUpdateDepartment={(id, changes) => void updateOrgDepartmentField(id, changes)}
+                    onDelete={(node) => void deleteOrgNode(node)}
+                    onCollapse={() => setRightCollapsed(true)}
+                  />
                 )}
               </div>
             )}
+          </section>
+        )}
 
-            {tree.length > 0 && (
+        {activeNav === 4 && (
+          <section className="jd-panel">
+            <form className="jd-form" onSubmit={(event) => void searchBd(event)}>
+              <input value={bdQuery} onChange={(e) => setBdQuery(e.target.value)} placeholder="输入自然语言需求，如「找上海做大模型算法的公司，最好在招人」" aria-label="BD 深度检索" />
+              <button type="submit" disabled={bdLoading}>{bdLoading ? "检索中…" : "深度检索"}</button>
+            </form>
+
+            {bdProgress && (
+              <div className="bd-progress">
+                <span className="bd-progress-dot" />
+                <span>{bdProgress.message}</span>
+              </div>
+            )}
+
+            {bdSessionId && (
+              <div className="bd-toolbar">
+                <form className="jd-form" onSubmit={(event) => void followUpBd(event)}>
+                  <input value={bdFollowUp} onChange={(e) => setBdFollowUp(e.target.value)} placeholder="追问：补充或修正检索方向…" aria-label="BD 追问" />
+                  <button type="submit" disabled={bdLoading}>追问</button>
+                </form>
+              </div>
+            )}
+
+            {bdLeads.length === 0 ? (
+              <div className="empty-state"><strong>暂无线索</strong><p>输入需求开始深度检索，系统会规划搜索、抓取页面并综合出带证据的线索。</p></div>
+            ) : (
               <div className="results-card">
-                <div className="section-heading"><h2>组织树</h2></div>
-                <MappingTreeView nodes={tree} />
+                <div className="section-heading"><h2>线索</h2><span>{bdLeads.length} 条</span></div>
+                <div className="bd-leads">
+                  {bdLeads.map((lead) => (
+                    <div key={lead.id} className="bd-lead-card">
+                      <div className="bd-lead-head">
+                        <strong>{lead.company_name}</strong>
+                        <span className="bd-role">{lead.job_title ?? "岗位未知"}</span>
+                        {lead.is_hiring === true && <span className="bd-tag bd-tag-ok">在招</span>}
+                        {lead.is_hiring === false && <span className="bd-tag bd-tag-bad">未在招</span>}
+                        {lead.confidence != null && <span className="bd-tag">置信度 {Math.round(lead.confidence * 100)}%</span>}
+                      </div>
+                      {(lead.posted_time || lead.salary_range || lead.level) && (
+                        <div className="bd-meta">
+                          {lead.posted_time && <span className="bd-meta-item">开放时间：{lead.posted_time}</span>}
+                          {lead.salary_range && <span className="bd-meta-item">薪资：{lead.salary_range}</span>}
+                          {lead.level && <span className="bd-meta-item">职级：{lead.level}</span>}
+                        </div>
+                      )}
+                      {lead.requirements.length > 0 && (
+                        <ul className="bd-requirements">
+                          {lead.requirements.map((req, index) => <li key={index}>{req}</li>)}
+                        </ul>
+                      )}
+                      {lead.summary && <p className="bd-summary">{lead.summary}</p>}
+                      {lead.url && <a className="bd-link" href={lead.url} target="_blank" rel="noreferrer">{lead.url}</a>}
+                      {lead.evidence.length > 0 && (
+                        <ul className="bd-evidence">
+                          {lead.evidence.map((item, index) => (
+                            <li key={index}>
+                              {item.claim ? <strong>{item.claim}</strong> : null}
+                              {item.quote ? <span>：{item.quote}</span> : null}
+                              {item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">（来源）</a> : null}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </section>
         )}
 
         {activeNav === 5 && (
-          <section className="jd-panel">
-            <form className="jd-form" onSubmit={(event) => void searchBd(event)}>
-              <input value={bdQuery} onChange={(e) => setBdQuery(e.target.value)} placeholder="搜索：如「Java 工程师 招聘 上海」" aria-label="BD 搜索" />
-              <button type="submit">搜索线索</button>
-            </form>
-            {bdLeads.length === 0 ? (
-              <div className="empty-state"><strong>暂无线索</strong><p>输入关键词搜索潜在客户与招聘需求。</p></div>
-            ) : (
-              <div className="results-card">
-                <div className="section-heading"><h2>线索</h2><span>{bdLeads.length} 条</span></div>
-                <table>
-                  <thead><tr><th>公司</th><th>岗位</th><th>来源</th><th>状态</th></tr></thead>
-                  <tbody>
-                    {bdLeads.map((lead) => (
-                      <tr key={lead.id}>
-                        <td><strong>{lead.company_name}</strong></td>
-                        <td>{lead.job_title ?? "—"}</td>
-                        <td>{lead.source}</td>
-                        <td>{lead.status}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        )}
-
-        {activeNav === 6 && (
           <section className="jd-panel">
             <div className="case-section">
               <div className="section-heading">
@@ -1369,7 +3006,6 @@ export function App({ api }: { api: RecruitmentApi }) {
 
               <div className="jd-row">
                 <input value={settings.deepseek_api_key ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_api_key: e.target.value })} placeholder="DeepSeek API Key" aria-label="DeepSeek API Key" />
-                <input value={settings.deepseek_model ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_model: e.target.value })} placeholder="DeepSeek 模型" aria-label="DeepSeek 模型" />
               </div>
               <div className="jd-row">
                 <input value={settings.siliconflow_api_key ?? ""} onChange={(e) => setSettings({ ...settings, siliconflow_api_key: e.target.value })} placeholder="SiliconFlow API Key" aria-label="SiliconFlow API Key" />
@@ -1405,6 +3041,9 @@ export function App({ api }: { api: RecruitmentApi }) {
             </div>
             {dataRootMessage && <p className="muted">{dataRootMessage}</p>}
 
+            <IndexSyncPanel api={api} />
+            <RemindersPanel api={api} onOpenCase={(caseId) => void openCaseDrawer(caseId)} />
+
             <div className="section-heading" style={{ marginTop: 20 }}>
               <h2>健康检测台</h2>
               <div className="case-actions">
@@ -1424,6 +3063,7 @@ export function App({ api }: { api: RecruitmentApi }) {
               </div>
             )}
 
+            {SHOW_ADVANCED_SETTINGS && (<>
             <div className="case-section">
               <div className="section-heading">
                 <h2>回收站</h2>
@@ -1440,35 +3080,6 @@ export function App({ api }: { api: RecruitmentApi }) {
                         <small>{item.entity_type === "candidate" ? "候选人" : "岗位"}</small>
                       </div>
                       <button className="detail-button" onClick={() => void restoreItem(item)}>恢复</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="case-section">
-              <div className="section-heading">
-                <h2>提醒管理</h2>
-                <button className="import-button" onClick={() => void loadReminders()}>加载提醒</button>
-              </div>
-              <form className="jd-form" onSubmit={(event) => void createReminderItem(event)}>
-                <div className="jd-row">
-                  <input value={reminderTitle} onChange={(e) => setReminderTitle(e.target.value)} placeholder="提醒内容" aria-label="提醒内容" />
-                  <input value={reminderAt} onChange={(e) => setReminderAt(e.target.value)} type="datetime-local" aria-label="提醒时间" />
-                </div>
-                <button type="submit">添加提醒</button>
-              </form>
-              {reminders.length === 0 ? (
-                <p className="muted">暂无待处理提醒</p>
-              ) : (
-                <div className="case-events">
-                  {reminders.map((r) => (
-                    <div key={r.id} className="case-row">
-                      <div>
-                        <strong>{r.title}</strong>
-                        <small>{r.remind_at}</small>
-                      </div>
-                      <button className="detail-button" onClick={() => void dismissReminderItem(r.id)}>完成</button>
                     </div>
                   ))}
                 </div>
@@ -1549,158 +3160,135 @@ export function App({ api }: { api: RecruitmentApi }) {
                 </div>
               )}
             </div>
+            </>)}
           </section>
         )}
       </main>
 
-      {selected && (
-        <aside className="detail-drawer" aria-label="候选人详情">
-          <button className="close" aria-label="关闭详情" onClick={() => setSelected(null)}>×</button>
-          <span className="eyebrow">候选人详情</span>
-          <h2>{selected.content}</h2>
-          <div className="fact-grid">
-            <div><small>相关经验</small><strong>{selected.total_years ?? "—"} 年经验</strong></div>
-            <div><small>最高学历</small><strong>{selected.highest_degree ?? "待核验"}</strong></div>
-            <div><small>当前地点</small><strong>{selected.location ?? "待核验"}</strong></div>
-            <div><small>融合得分</small><strong>{selected.score.toFixed(3)}</strong></div>
+      {matchDrawer && (
+        <div className="match-drawer-backdrop" onClick={() => setMatchDrawer(null)}>
+          <aside className="match-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="match-drawer-header">
+              <div>
+                <h2>{matchDrawer.title}</h2>
+                <small>{matchDrawer.items.length} 条匹配</small>
+              </div>
+              <button className="detail-button" onClick={() => setMatchDrawer(null)}>关闭</button>
+            </div>
+            <div className="match-drawer-body">
+              {matchDrawer.items.length === 0 ? (
+                <div className="empty-state">
+                  <strong>暂无匹配</strong>
+                  <p>没有满足条件的匹配结果。</p>
+                </div>
+              ) : matchDrawer.mode === "candidates" ? (
+                <table className="drawer-table">
+                  <thead><tr><th>姓名</th><th>学历</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {matchDrawer.items.map((item) => {
+                      const p = item.parsed_data;
+                      const status = matchDrawer.statuses[item.result_id || ""] ?? "未处理";
+                      const industry = p?.current_industry || p?.longest_industry
+                        ? `${p.current_industry ? `最近：${p.current_industry}` : ""}${p.longest_industry ? ` 最长：${p.longest_industry}` : ""}`
+                        : "—";
+                      const tech = p?.tech_direction?.join("、") || "";
+                      const biz = p?.business_direction?.join("、") || "";
+                      return (
+                        <Fragment key={item.candidate_id}>
+                          <tr>
+                            <td><strong>{item.name}</strong></td>
+                            <td>{eduLabel(p) || "—"}</td>
+                            <td>{item.phone || "—"}</td>
+                            <td>{industry}</td>
+                            <td>{tech || "—"}</td>
+                            <td>{biz || "—"}</td>
+                            <td>
+                              <div className="case-actions">
+                                <button className="detail-button" onClick={() => void previewResumeFile(item.revision_id, item.name, item.original_filename ?? "")}>查看详情</button>
+                                <button className="detail-button" onClick={() => void downloadResumeFile(item.revision_id, item.original_filename ?? item.name)}>下载</button>
+                                <button className="detail-button" disabled={creatingCase || !item.result_id} onClick={() => void createCaseFromDrawer(item.result_id || "")}>{matchCaseIds[item.result_id || ""] ? "查看流程" : "建流程"}</button>
+                                {status !== "未处理" && <span className="match-status">{status}</span>}
+                              </div>
+                            </td>
+                          </tr>
+                          {(p?.experiences?.length || p?.projects?.length) ? (
+                            <tr>
+                              <td colSpan={7}>
+                                {p.experiences && p.experiences.length > 0 && (
+                                  <div className="candidate-line">
+                                    <small>工作履历</small>
+                                    {p.experiences.map((e, i) => {
+                                      const head = [e.title, e.company].filter(Boolean).join(" @ ");
+                                      const tail = [e.industry ? `（${e.industry}）` : "", e.summary].filter(Boolean).join("，");
+                                      return <div key={i}>{[head, tail].filter(Boolean).join("，")}</div>;
+                                    })}
+                                  </div>
+                                )}
+                                {p.projects && p.projects.length > 0 && (
+                                  <div className="candidate-line">
+                                    <small>项目经验</small>
+                                    {p.projects.map((pr, i) => (
+                                      <div key={i}>{pr.name ?? ""}{pr.tech_stack ? `（${pr.tech_stack}）` : ""}{pr.business_scene ? `，${pr.business_scene}` : ""}</div>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <table className="drawer-table">
+                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>AI/非AI</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {matchDrawer.items.map((item) => {
+                      const status = matchDrawer.statuses[item.result_id] ?? "未处理";
+                      return (
+                        <Fragment key={item.jd_id}>
+                          <tr>
+                            <td><strong>{item.title}</strong></td>
+                            <td>{item.company}</td>
+                            <td>{JD_STATUS_OPTIONS.find((o) => o.value === item.jd_status)?.label ?? item.jd_status}</td>
+                            <td>{jdAiLabel(item.ai_category)}</td>
+                            <td>{jdRequirementLabel(item.parsed_data)}</td>
+                            <td>
+                              <div className="case-actions">
+                                <button className="detail-button" disabled={creatingCase || (!item.case_id && item.jd_status !== "OPEN")} onClick={() => item.case_id ? void openCaseDrawer(item.case_id) : void createCaseFromDrawer(item.result_id)}>{item.case_id || matchCaseIds[item.result_id] ? "查看流程" : "建流程"}</button>
+                                {status !== "未处理" && <span className="match-status">{status}</span>}
+                              </div>
+                            </td>
+                          </tr>
+                          {item.source_text && (
+                            <tr><td colSpan={6}><pre className="jd-source-text">{item.source_text}</pre></td></tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {caseDrawer && <CaseDrawer key={caseDrawer.id} api={api} initialCase={caseDrawer} onClose={() => setCaseDrawer(null)} onUpdated={(detail) => { setCaseDrawer(detail); setCases((items) => items.map((item) => item.id === detail.id ? detail : item)); }} />}
+      {resumeReview && <ResumeReviewDrawer key={resumeReview.revision_id} api={api} initialReview={resumeReview} onClose={() => setResumeReview(null)} onApproved={() => void loadCandidates()} />}
+
+      {previewUrl && (
+        <div className="preview-overlay" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }}>
+          <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <span>{previewName}</span>
+              <button className="detail-button" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }}>关闭</button>
+            </div>
+            <iframe src={previewUrl} title={previewName} className="preview-frame" />
           </div>
-
-          <section className="case-section" aria-label="资料更正">
-            <h3>资料更正</h3>
-            <div className="contact-form">
-              <label>
-                显示名称
-                <input
-                  value={correctedName}
-                  onChange={(event) => setCorrectedName(event.target.value)}
-                  placeholder="输入更正后的姓名"
-                  aria-label="候选人显示名称"
-                />
-              </label>
-              <div className="case-actions">
-                <button className="detail-button" onClick={() => void correctCandidateName()}>保存名称更正</button>
-                {lastCorrectionId && <button className="detail-button" onClick={() => void undoCandidateCorrection()}>撤销本次更正</button>}
-                <button className="detail-button" onClick={() => void deleteSelectedCandidate()}>移入回收站</button>
-              </div>
-              {correctionMessage && <p role="status">{correctionMessage}</p>}
-            </div>
-          </section>
-
-          <section className="case-section" aria-label="联系方式">
-            <h3>联系方式</h3>
-            <div className="contact-form">
-              <label>
-                邮箱
-                <input
-                  value={contactEmail}
-                  onChange={(event) => setContactEmail(event.target.value)}
-                  placeholder="candidate@example.com"
-                  aria-label="候选人邮箱"
-                />
-              </label>
-              <label>
-                手机
-                <input
-                  value={contactPhone}
-                  onChange={(event) => setContactPhone(event.target.value)}
-                  placeholder="13800138000"
-                  aria-label="候选人手机"
-                />
-              </label>
-              <button className="detail-button" onClick={() => void saveContact()}>保存联系方式</button>
-            </div>
-          </section>
-
-          <section className="case-section" aria-label="简历版本">
-            <h3>简历版本</h3>
-            {resumeRevisions.length === 0 ? (
-              <p className="muted">暂无版本记录</p>
-            ) : resumeRevisions.map((revision) => (
-              <div className="case-row" key={revision.revision_id}>
-                <div>
-                  <strong>{revision.original_filename}</strong>
-                  <small>{revision.display_name ?? "未命名"} · {revision.status}</small>
-                </div>
-                {revision.is_current ? (
-                  <span className="ok">当前版本</span>
-                ) : (
-                  <button className="detail-button" onClick={() => void switchResumeRevision(revision.revision_id)}>设为当前版本</button>
-                )}
-              </div>
-            ))}
-          </section>
-
-          {reverseMatches.length > 0 && (
-            <section className="case-section" aria-label="潜在匹配岗位">
-              <h3>潜在匹配岗位</h3>
-              {reverseMatches.map((match) => (
-                <div key={match.jd_id} className="case-row">
-                  <div>
-                    <strong>{match.title}</strong>
-                    <small>{match.company} · 得分 {match.score.toFixed(3)}</small>
-                  </div>
-                  <button className="detail-button" onClick={() => void createCaseFromReverse(match)}>建流程</button>
-                </div>
-              ))}
-            </section>
-          )}
-
-          <section className="case-section" aria-label="招聘流程">
-            <h3>招聘流程</h3>
-            {selectedCases.length === 0 ? (
-              <p className="muted">暂无进行中的流程</p>
-            ) : (
-              selectedCases.map((caseItem) => (
-                <div key={caseItem.id} className="case-row">
-                  <div>
-                    <strong>{caseItem.stage}</strong>
-                    <small>{caseItem.note ?? ""}</small>
-                  </div>
-                  <div className="case-actions">
-                    <select
-                      aria-label="推进阶段"
-                      value={caseItem.stage}
-                      onChange={(event) => void advanceStage(caseItem.id, event.target.value)}
-                    >
-                      {STAGES.map((stage) => (
-                        <option key={stage} value={stage}>{stage}</option>
-                      ))}
-                    </select>
-                    <button className="detail-button" onClick={() => void loadCaseEvents(caseItem.id)}>记录</button>
-                    <button className="detail-button" onClick={() => void undoStage(caseItem.id)}>撤销</button>
-                  </div>
-                </div>
-              ))
-            )}
-
-            {activeCaseId && caseEvents.length > 0 && (
-              <div className="case-events">
-                {caseEvents.map((event) => (
-                  <div key={event.id}>
-                    <strong>{event.stage}</strong>
-                    {event.note && <span> · {event.note}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </aside>
+        </div>
       )}
     </div>
-  );
-}
-
-
-function MappingTreeView({ nodes }: { nodes: MappingTreeNode[] }) {
-  if (nodes.length === 0) return null;
-  return (
-    <ul className="mapping-tree">
-      {nodes.map((node) => (
-        <li key={node.id}>
-          <span>{node.name}</span>
-          {node.children.length > 0 && <MappingTreeView nodes={node.children} />}
-        </li>
-      ))}
-    </ul>
   );
 }

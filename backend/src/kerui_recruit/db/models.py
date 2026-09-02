@@ -34,7 +34,8 @@ class Candidate(IdMixin, Base):
     )
 
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="PENDING_REVIEW", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="AVAILABLE", nullable=False)
+    workflow_previous_status: Mapped[str | None] = mapped_column(String(32))
     total_years: Mapped[Decimal | None] = mapped_column(Numeric(5, 1))
     highest_degree: Mapped[str | None] = mapped_column(String(32))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -61,6 +62,7 @@ class CandidateContact(IdMixin, Base):
     phone_encrypted: Mapped[str | None] = mapped_column(Text)
     email_confidence: Mapped[float | None] = mapped_column(Float)
     phone_confidence: Mapped[float | None] = mapped_column(Float)
+    manual_fields: Mapped[list[str] | None] = mapped_column(JSON)
     candidate: Mapped[Candidate] = relationship(back_populates="contact")
 
 
@@ -113,6 +115,11 @@ class ResumeRevision(IdMixin, Base):
     raw_text: Mapped[str | None] = mapped_column(Text)
     parsed_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     parse_version: Mapped[str | None] = mapped_column(String(100))
+    manual_overrides: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    extraction_diagnostics: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    review_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
     document: Mapped[ResumeDocument] = relationship(back_populates="revisions")
     blob: Mapped[Blob] = relationship(back_populates="revisions")
 
@@ -248,6 +255,7 @@ class CandidateJobCase(IdMixin, Base):
         ),
         Index("ix_case_candidate", "candidate_id"),
         Index("ix_case_jd", "jd_id"),
+        Index("ix_case_stage", "stage"),
     )
 
     candidate_id: Mapped[str] = mapped_column(
@@ -259,22 +267,46 @@ class CandidateJobCase(IdMixin, Base):
         nullable=False,
     )
     stage: Mapped[str] = mapped_column(String(24), default="待评估", nullable=False)
+    template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hiring_process.id", ondelete="SET NULL"),
+        index=True,
+    )
+    template_version: Mapped[int | None] = mapped_column(Integer)
+    template_snapshot: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     note: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     candidate: Mapped[Candidate] = relationship()
     jd: Mapped[Jd] = relationship()
-    events: Mapped[list[StageEvent]] = relationship(
+    stage_events: Mapped[list[StageEvent]] = relationship(
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
+    rounds: Mapped[list[CaseRound]] = relationship(
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
+    events: Mapped[list[CaseEvent]] = relationship(
         back_populates="case",
         cascade="all, delete-orphan",
     )
 
 
 class StageEvent(IdMixin, Base):
+    """Legacy stage-transition rows kept for backward compatibility.
+
+    New business facts are recorded as :class:`CaseEvent`; this table is no
+    longer written to and only retained so historical databases stay readable.
+    """
+
     __tablename__ = "stage_event"
     __table_args__ = (
         CheckConstraint(
             "stage IN ('待评估','待联系','已联系','有意向','已推荐','初试','复试','终试','Offer','入职','客户拒绝','候选人拒绝','暂缓','岗位关闭')",
             name="ck_stage_event_stage",
+        ),
+        CheckConstraint(
+            "result IS NULL OR result IN ('推进','淘汰','offer','入职','拒接')",
+            name="ck_stage_event_result",
         ),
     )
 
@@ -284,8 +316,133 @@ class StageEvent(IdMixin, Base):
         index=True,
     )
     stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    round_no: Mapped[int | None] = mapped_column(Integer)
+    round_name: Mapped[str | None] = mapped_column(String(64))
+    result: Mapped[str | None] = mapped_column(String(16))
     note: Mapped[str | None] = mapped_column(Text)
+    case: Mapped[CandidateJobCase] = relationship(back_populates="stage_events")
+
+
+class HiringProcess(IdMixin, Base):
+    """Per-JD interview-round template.
+
+    A company-level default is derived by looking up other JDs with the same
+    ``Jd.company`` string, so no separate company template entity is needed.
+    """
+
+    __tablename__ = "hiring_process"
+
+    jd_id: Mapped[str] = mapped_column(
+        ForeignKey("jd.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    rounds: Mapped[list[ProcessRound]] = relationship(
+        back_populates="process",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProcessRound(IdMixin, Base):
+    __tablename__ = "process_round"
+    __table_args__ = (
+        UniqueConstraint("process_id", "round_no", name="uq_process_round_no"),
+    )
+
+    process_id: Mapped[str] = mapped_column(
+        ForeignKey("hiring_process.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    round_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    round_type: Mapped[str | None] = mapped_column(String(32))
+    process: Mapped[HiringProcess] = relationship(back_populates="rounds")
+
+
+class CaseRound(IdMixin, Base):
+    """A stable interview-round instance on a specific case.
+
+    ``id`` is the stable round identity; ``round_no``/``sort_order`` are only
+    for display ordering and never used to infer pass/fail. Ad-hoc retries are
+    new rows (same ``round_no``, new ``id``), while rescheduling only mutates
+    the related event's ``occurred_at``.
+    """
+
+    __tablename__ = "case_round"
+    __table_args__ = (
+        Index("ix_case_round_case", "case_id"),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate_job_case.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    round_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    round_type: Mapped[str | None] = mapped_column(String(32))
+    definition_key: Mapped[str | None] = mapped_column(String(200))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    source: Mapped[str] = mapped_column(String(16), default="template", nullable=False)
+    skipped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    case: Mapped[CandidateJobCase] = relationship(back_populates="rounds")
+    events: Mapped[list[CaseEvent]] = relationship(back_populates="round")
+
+
+class CaseEvent(IdMixin, Base):
+    """Append-only business facts driving the recruitment pipeline and dashboard.
+
+    ``occurred_at`` is the business time (editable for backfill), ``recorded_at``
+    is the system ingestion time. ``idempotency_key`` deduplicates retries and
+    ``supersedes_event_id`` links a correction to the event it voids.
+    """
+
+    __tablename__ = "case_event"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('RECOMMENDED','INTERVIEW_ENTERED','INTERVIEW_RESULT',"
+            "'OFFER','ONBOARDED','EXIT','NOTE')",
+            name="ck_case_event_type",
+        ),
+        CheckConstraint(
+            "status IN ('active','void')",
+            name="ck_case_event_status",
+        ),
+        Index("ix_case_event_case", "case_id"),
+        Index("ix_case_event_occurred", "occurred_at"),
+        Index("ix_case_event_type", "event_type"),
+    )
+
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("candidate_job_case.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    case_round_id: Mapped[str | None] = mapped_column(
+        ForeignKey("case_round.id", ondelete="CASCADE"),
+        index=True,
+    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+    result: Mapped[str | None] = mapped_column(String(24))
+    note: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    supersedes_event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("case_event.id", ondelete="SET NULL"),
+    )
+    status: Mapped[str] = mapped_column(String(12), default="active", nullable=False)
+    data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     case: Mapped[CandidateJobCase] = relationship(back_populates="events")
+    round: Mapped[CaseRound | None] = relationship(back_populates="events")
 
 
 class MatchRun(IdMixin, Base):
@@ -309,7 +466,7 @@ class MatchResult(IdMixin, Base):
     __tablename__ = "match_result"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('未处理','保留','短名单','排除')",
+            "status IN ('未处理','保留')",
             name="ck_match_result_status",
         ),
     )
@@ -422,6 +579,23 @@ class Reminder(IdMixin, Base):
     remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    case_id: Mapped[str | None] = mapped_column(ForeignKey("candidate_job_case.id", ondelete="CASCADE"), index=True)
+    paused_by_workflow: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    time_basis: Mapped[str] = mapped_column(String(24), default="UTC", nullable=False)
+
+
+class IndexSyncRecord(IdMixin, Base):
+    """Durable outbox: revisions coalesce per entity, failures remain retryable."""
+    __tablename__ = "index_sync"
+    __table_args__ = (UniqueConstraint("entity_type", "entity_id", name="uq_index_sync_entity"),)
+    entity_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    requested_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    applied_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BdLead(IdMixin, Base):
@@ -446,6 +620,152 @@ class BdLead(IdMixin, Base):
     status: Mapped[str] = mapped_column(String(24), default="新线索", nullable=False)
     note: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+    confidence: Mapped[float | None] = mapped_column(Float)
+    is_hiring: Mapped[bool | None] = mapped_column(Boolean)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("bd_search_session.id", ondelete="SET NULL"),
+        index=True,
+    )
+    synthesized_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    posted_time: Mapped[str | None] = mapped_column(String(100))
+    salary_range: Mapped[str | None] = mapped_column(String(100))
+    level: Mapped[str | None] = mapped_column(String(100))
+    requirements: Mapped[list[str] | None] = mapped_column(JSON)
+    session: Mapped[BdSearchSession | None] = relationship(back_populates="leads")
+    evidence: Mapped[list[BdEvidence]] = relationship(
+        back_populates="lead",
+        cascade="all, delete-orphan",
+    )
+
+
+class BdSearchSession(IdMixin, Base):
+    __tablename__ = "bd_search_session"
+
+    query: Mapped[str] = mapped_column(String(1000), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="completed", nullable=False)
+    leads: Mapped[list[BdLead]] = relationship(back_populates="session")
+
+
+class BdEvidence(IdMixin, Base):
+    __tablename__ = "bd_evidence"
+
+    lead_id: Mapped[str] = mapped_column(
+        ForeignKey("bd_lead.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    claim: Mapped[str | None] = mapped_column(Text)
+    quote: Mapped[str | None] = mapped_column(Text)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    relevance_score: Mapped[float | None] = mapped_column(Float)
+    lead: Mapped[BdLead] = relationship(back_populates="evidence")
+
+
+class Company(IdMixin, Base):
+    __tablename__ = "company"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    departments: Mapped[list[Department]] = relationship(
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+    employees: Mapped[list[Employee]] = relationship(
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
+
+
+class Department(IdMixin, Base):
+    __tablename__ = "department"
+    __table_args__ = (
+        Index("ix_department_company_parent", "company_id", "parent_id"),
+    )
+
+    company_id: Mapped[str] = mapped_column(
+        ForeignKey("company.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("department.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    leader_id: Mapped[str | None] = mapped_column(
+        ForeignKey("employee.id", ondelete="SET NULL", use_alter=True, name="fk_department_leader"),
+    )
+    leader_report_to: Mapped[str | None] = mapped_column(
+        ForeignKey("employee.id", ondelete="SET NULL", use_alter=True, name="fk_department_leader_report_to"),
+    )
+    team_size: Mapped[int | None] = mapped_column(Integer)
+    business_direction: Mapped[str | None] = mapped_column(Text)
+    tech_stack: Mapped[str | None] = mapped_column(Text)
+    office_location: Mapped[str | None] = mapped_column(String(64))
+    hc_status: Mapped[str | None] = mapped_column(String(32))
+    hc_internal_note: Mapped[str | None] = mapped_column(Text)
+
+    company: Mapped[Company] = relationship(back_populates="departments")
+    parent: Mapped[Department | None] = relationship(
+        remote_side="Department.id",
+        back_populates="children",
+    )
+    children: Mapped[list[Department]] = relationship(
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    employees: Mapped[list[Employee]] = relationship(
+        back_populates="department",
+        cascade="all, delete-orphan",
+        foreign_keys="Employee.department_id",
+    )
+
+
+class Employee(IdMixin, Base):
+    __tablename__ = "employee"
+    __table_args__ = (
+        Index("ix_employee_department", "company_id", "department_id"),
+    )
+
+    company_id: Mapped[str] = mapped_column(
+        ForeignKey("company.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    department_id: Mapped[str | None] = mapped_column(
+        ForeignKey("department.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200))
+    job_level: Mapped[str | None] = mapped_column(String(32))
+    report_to: Mapped[str | None] = mapped_column(
+        ForeignKey("employee.id", ondelete="SET NULL"),
+        index=True,
+    )
+    subordinate_count: Mapped[int | None] = mapped_column(Integer)
+    tenure_years: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    business_module: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(String(32))
+    intention: Mapped[str | None] = mapped_column(Text)
+    remark: Mapped[str | None] = mapped_column(Text)
+    contact: Mapped[str | None] = mapped_column(Text)
+    is_key: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    company: Mapped[Company] = relationship(back_populates="employees")
+    department: Mapped[Department | None] = relationship(
+        back_populates="employees",
+        foreign_keys=[department_id],
+    )
+    report_to_employee: Mapped[Employee | None] = relationship(
+        remote_side="Employee.id",
+        back_populates="subordinates",
+    )
+    subordinates: Mapped[list[Employee]] = relationship(
+        back_populates="report_to_employee",
+        foreign_keys=[report_to],
+    )
 
 
 class SchemaVersion(Base):

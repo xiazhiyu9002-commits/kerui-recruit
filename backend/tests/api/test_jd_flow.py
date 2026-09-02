@@ -1,5 +1,6 @@
 from io import BytesIO
 from pathlib import Path
+import time
 
 import pytest
 from docx import Document
@@ -26,6 +27,21 @@ def _headers() -> dict[str, str]:
     return {"X-Kerui-Session": "launch-token"}
 
 
+def _wait_jd_ready(client: TestClient, revision_id: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        response = client.get("/api/jd", headers=_headers())
+        assert response.status_code == 200
+        revision = next((item for item in response.json() if item["revision_id"] == revision_id), None)
+        if revision and revision["status"] == "READY":
+            assert revision["jd_status"] == "OPEN"
+            pending = client.app.state.services.index_sync_service.status()["items"]
+            if not any(item["entity_type"] == "jd" and item["entity_id"] == revision["jd_id"] for item in pending):
+                return
+        time.sleep(.05)
+    raise AssertionError("Local JD pipeline did not produce an OPEN, READY revision")
+
+
 def test_jd_import_and_match_round_trip(client: TestClient) -> None:
     imported = client.post(
         "/api/jd/import",
@@ -35,6 +51,7 @@ def test_jd_import_and_match_round_trip(client: TestClient) -> None:
     assert imported.status_code == 202
     body = imported.json()
     assert body["jd_id"]
+    _wait_jd_ready(client, body["revision_id"])
 
     match = client.post(
         "/api/match/jd",
@@ -55,6 +72,8 @@ def test_batch_match_multiple_jds(client: TestClient) -> None:
         json={"company": "某科技", "title": "算法工程师", "source_text": "Python 算法 大模型"},
         headers=_headers(),
     ).json()
+    _wait_jd_ready(client, first["revision_id"])
+    _wait_jd_ready(client, second["revision_id"])
 
     batch = client.post(
         "/api/match/batch",

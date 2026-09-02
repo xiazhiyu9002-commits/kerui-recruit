@@ -19,13 +19,33 @@ _IMAGE_MIME = {
     ".bmp": "image/bmp",
 }
 
+_DEFAULT_DPI = 200
+_MAX_PAGES = 50
+# 单个页面识别超时；每页独立控制，避免长文档无限占用。
+_PAGE_TIMEOUT_SECONDS = 120.0
 
-def rasterize_pdf(content: bytes) -> list[bytes]:
-    """Render each PDF page to a PNG image for vision-based OCR."""
-    images: list[bytes] = []
+
+def rasterize_pdf(
+    content: bytes,
+    *,
+    page_indexes: list[int] | None = None,
+    dpi: int = _DEFAULT_DPI,
+) -> list[tuple[int, bytes]]:
+    """把 PDF 的指定页面渲染为 PNG，返回 (页码, 图片字节) 列表。
+
+    未指定 ``page_indexes`` 时渲染全部页面；页数受 ``_MAX_PAGES`` 上限约束，
+    超出部分直接忽略，避免异常大的文档被无限制地调用模型。
+    """
+    images: list[tuple[int, bytes]] = []
     with pymupdf.open(stream=io.BytesIO(content), filetype="pdf") as document:
-        for page in document:
-            images.append(page.get_pixmap(dpi=150).tobytes("png"))
+        indexes = page_indexes if page_indexes is not None else list(range(document.page_count))
+        for index in indexes:
+            if index < 0 or index >= document.page_count:
+                continue
+            if len(images) >= _MAX_PAGES:
+                break
+            page = document[index]
+            images.append((index, page.get_pixmap(dpi=dpi).tobytes("png")))
     return images
 
 
@@ -46,12 +66,31 @@ class OpenAICompatibleOCRProvider:
         self.model = model
 
     async def extract(self, content: bytes, filename: str) -> str:
+        """识别整份文件，返回拼接后的文本（用于所有页面都需要 OCR 的场景）。"""
         if _mime_for(filename) == "application/pdf":
-            images = rasterize_pdf(content)
+            images = [data for _, data in rasterize_pdf(content)]
         else:
             images = [content]
         texts = [await self._extract_image(image, filename) for image in images]
         return "\n".join(text.strip() for text in texts if text.strip())
+
+    async def extract_pages(
+        self,
+        content: bytes,
+        filename: str,
+        page_indexes: list[int],
+    ) -> list[str]:
+        """只识别指定页面，按 ``page_indexes`` 顺序返回每页文本。"""
+        if not page_indexes:
+            return []
+        if _mime_for(filename) == "application/pdf":
+            rasterized = rasterize_pdf(content, page_indexes=page_indexes)
+        else:
+            rasterized = [(page_indexes[0], content)]
+        results: list[str] = []
+        for _, image in rasterized:
+            results.append(await self._extract_image(image, filename))
+        return results
 
     async def _extract_image(self, image: bytes, filename: str) -> str:
         mime = _mime_for(filename)
@@ -75,25 +114,58 @@ class OpenAICompatibleOCRProvider:
                     ],
                     "temperature": 0,
                 },
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(_PAGE_TIMEOUT_SECONDS, connect=10.0),
             )
+        except httpx.TimeoutException as error:
+            raise ProviderError(
+                code="E_OCR_TIMEOUT",
+                retryable=True,
+                user_message="OCR 服务响应超时",
+            ) from error
         except httpx.RequestError as error:
             raise ProviderError(
-                code="E_API_NETWORK",
+                code="E_OCR_NETWORK",
                 retryable=True,
                 user_message="无法连接 OCR 服务",
             ) from error
         if response.status_code >= 400:
-            raise map_http_error(response.status_code)
+            raise _map_ocr_http_error(response)
         try:
             payload = response.json()
-            return payload["choices"][0]["message"]["content"]
+            text = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ProviderError(
-                code="E_API_SCHEMA",
+                code="E_OCR_SCHEMA",
                 retryable=True,
                 user_message="OCR 服务返回内容不符合结构要求",
             ) from error
+        if not text or not text.strip():
+            raise ProviderError(
+                code="E_OCR_EMPTY",
+                retryable=False,
+                user_message="OCR 服务未识别到任何文字",
+            )
+        return text
+
+
+def _map_ocr_http_error(response: httpx.Response) -> ProviderError:
+    status = response.status_code
+    # 视觉模型不支持图片输入时，多数兼容接口返回 400/422 并在消息中说明。
+    if status in (400, 422):
+        detail = ""
+        try:
+            payload = response.json()
+            detail = str(payload.get("error", {}).get("message", ""))
+        except (ValueError, AttributeError):
+            pass
+        lowered = detail.lower()
+        if any(token in lowered for token in ("image", "vision", "图片", "视觉", "multimodal")):
+            return ProviderError(
+                code="E_OCR_UNSUPPORTED",
+                retryable=False,
+                user_message="当前模型不支持图片识别，请更换支持视觉的模型",
+            )
+    return map_http_error(status)
 
 
 def _mime_for(filename: str) -> str:

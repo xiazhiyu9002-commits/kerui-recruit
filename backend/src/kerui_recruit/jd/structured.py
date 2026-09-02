@@ -23,9 +23,15 @@ class ParsedJd(BaseModel):
     industry: str | None = None
     min_years: float | None = Field(default=None, ge=0, le=80)
     highest_degree: str | None = None
+    qs_level: str | None = None
+    core_duties: list[str] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
+    plus_industry: list[str] = Field(default_factory=list)
+    plus_project_types: list[str] = Field(default_factory=list)
     summary: str = ""
     requirements: list[ParsedJdRequirement] = Field(default_factory=list)
 
 
 class JdParser(Protocol):
     async def parse_jd(self, text: str) -> ParsedJd: ...
+    async def split_jds(self, text: str) -> list[str]: ...

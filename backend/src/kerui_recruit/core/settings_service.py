@@ -9,7 +9,6 @@ ALLOWED_FIELDS = frozenset(
     {
         "deepseek_api_key",
         "deepseek_base_url",
-        "deepseek_model",
         "siliconflow_api_key",
         "siliconflow_base_url",
         "siliconflow_embedding_model",

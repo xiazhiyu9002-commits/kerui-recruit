@@ -2,6 +2,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from kerui_recruit.api.services import AppServices
+from kerui_recruit.api.errors import ApiError
+from kerui_recruit.correction.service import CorrectionConflict
 
 
 router = APIRouter(prefix="/api/correction", tags=["correction"])
@@ -27,13 +29,16 @@ class CorrectionResponse(BaseModel):
 @router.post("/apply", response_model=CorrectionResponse)
 def apply_correction(command: ApplyCorrectionRequest, request: Request) -> CorrectionResponse:
     services: AppServices = request.app.state.services
-    log = services.correction_service.apply_correction(
-        entity_type=command.entity_type,
-        entity_id=command.entity_id,
-        field_name=command.field_name,
-        new_value=command.new_value,
-        reason=command.reason,
-    )
+    try:
+        log = services.correction_service.apply_correction(
+            entity_type=command.entity_type,
+            entity_id=command.entity_id,
+            field_name=command.field_name,
+            new_value=command.new_value,
+            reason=command.reason,
+        )
+    except (ValueError, LookupError) as error:
+        raise _api_error(error) from error
     return CorrectionResponse(
         correction_id=log.id,
         entity_type=log.entity_type,
@@ -47,7 +52,10 @@ def apply_correction(command: ApplyCorrectionRequest, request: Request) -> Corre
 @router.post("/{correction_id}/undo", response_model=CorrectionResponse)
 def undo_correction(correction_id: str, request: Request) -> CorrectionResponse:
     services: AppServices = request.app.state.services
-    log = services.correction_service.undo_correction(correction_id)
+    try:
+        log = services.correction_service.undo_correction(correction_id)
+    except (ValueError, LookupError) as error:
+        raise _api_error(error) from error
     return CorrectionResponse(
         correction_id=log.id,
         entity_type=log.entity_type,
@@ -56,3 +64,11 @@ def undo_correction(correction_id: str, request: Request) -> CorrectionResponse:
         new_value=log.new_value,
         reverted=log.reverted,
     )
+
+
+def _api_error(error: Exception) -> ApiError:
+    if isinstance(error, CorrectionConflict):
+        return ApiError(409, error.code, str(error))
+    if isinstance(error, LookupError):
+        return ApiError(404, "E_CORRECTION_NOT_FOUND", "更正记录或实体不存在")
+    return ApiError(422, "E_INVALID_CORRECTION", str(error))

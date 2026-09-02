@@ -59,3 +59,25 @@ async def test_deepseek_jd_parser_maps_json_to_parsed_jd() -> None:
     assert result.requirements[0] == ParsedJdRequirement(
         kind="MUST", label="技能", value="Java"
     )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_jd_split_formats_prompt_without_brace_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        # 提示词里保留了 JSON 示例的大括号，同时正确替换了 JD 原文。
+        content = body["messages"][0]["content"]
+        assert "测试岗位" in content
+        assert '"chunks"' in content
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"chunks": ["测试岗位 JD"]})}}]},
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://test"
+    )
+    parser = DeepSeekJdParser(api_key="test-key", client=client)
+
+    chunks = await parser.split_jds("测试岗位 JD")
+    assert chunks == ["测试岗位 JD"]

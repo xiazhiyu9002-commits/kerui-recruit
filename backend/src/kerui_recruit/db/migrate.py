@@ -3,14 +3,14 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from sqlalchemy import Engine, func, insert, select
+from sqlalchemy import Engine, func, insert, inspect, select
 from sqlalchemy.orm import Session
 
 from kerui_recruit.db.base import Base
 from kerui_recruit.db import models as _models
 from kerui_recruit.db.upgrades import DEFAULT_UPGRADES, Upgrade
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 9
 
 
 def migrate(
@@ -19,7 +19,11 @@ def migrate(
     target_version: int = SCHEMA_VERSION,
     upgrades: tuple[Upgrade, ...] = DEFAULT_UPGRADES,
 ) -> None:
-    Base.metadata.create_all(engine)
+    # A versioned database must be checked and snapshotted before create_all:
+    # create_all can introduce tables even when the existing schema is newer
+    # than this application and therefore must not be opened for migration.
+    if not inspect(engine).has_table("schema_version"):
+        Base.metadata.create_all(engine)
     _apply_schema_version(engine, target_version=target_version, upgrades=upgrades)
 
 
@@ -32,6 +36,7 @@ def _apply_schema_version(
     with Session(engine) as session:
         current_version = session.scalar(select(func.max(_models.SchemaVersion.version)))
         if current_version is None:
+            Base.metadata.create_all(engine)
             session.add(_models.SchemaVersion(version=target_version))
             session.commit()
             return
@@ -41,6 +46,7 @@ def _apply_schema_version(
             )
 
     if current_version == target_version:
+        Base.metadata.create_all(engine)
         return
 
     _snapshot_before_upgrade(engine, current_version, target_version)
@@ -48,6 +54,9 @@ def _apply_schema_version(
     with engine.connect() as connection:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         try:
+            # New tables and ALTER statements belong to the same rollback
+            # boundary; the snapshot above still contains the original schema.
+            Base.metadata.create_all(connection)
             version = current_version
             while version < target_version:
                 upgrade = registry.get(version)

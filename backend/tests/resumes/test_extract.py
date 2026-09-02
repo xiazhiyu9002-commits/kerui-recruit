@@ -158,3 +158,113 @@ def test_windows_word_converter_initializes_com_and_never_saves(
 
     assert extract_module._extract_doc_with_word(source) == "Python Resume"
     assert calls == ["initialize", ("close", 0), "quit", "uninitialize"]
+
+
+def _image_pixmap(width: int, height: int) -> pymupdf.Pixmap:
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height))
+    pixmap.clear_with(0)
+    return pixmap
+
+
+def test_image_body_with_repeated_watermark_requires_ocr(tmp_path: Path) -> None:
+    """图片正文 + 超过 20 字符的重复水印，必须进入 OCR。"""
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_image(page.rect, pixmap=_image_pixmap(600, 800))
+    watermark = "机密-内部资料-禁止外传-CONFIDENTIAL"
+    for offset in range(8):
+        page.insert_text((72, 72 + offset * 20), watermark)
+    path = tmp_path / "watermark.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = extract_text(path)
+
+    assert result.requires_ocr is True
+    assert result.pages[0].needs_ocr is True
+    assert "水印" in result.pages[0].reason
+
+
+def test_normal_chinese_text_pdf_is_not_ocred(tmp_path: Path) -> None:
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    lines = [
+        "张三",
+        "求职意向：后端工程师（风控）",
+        "工作经历：某科技公司，负责支付风控平台研发，使用 Java 与 Python 构建高并发交易系统。",
+        "教育经历：某大学 计算机科学与技术 本科 2016-2020",
+        "技能：Java、Python、MySQL、Redis、微服务",
+    ]
+    for offset, line in enumerate(lines):
+        page.insert_text((72, 72 + offset * 18), line, fontname="china-s")
+    path = tmp_path / "zh.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = extract_text(path)
+
+    assert result.requires_ocr is False
+    assert result.pages[0].needs_ocr is False
+
+
+def test_english_resume_is_not_ocred_for_low_cjk(tmp_path: Path) -> None:
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    lines = [
+        "John Smith",
+        "Senior Software Engineer - Payments & Risk",
+        "Built real-time fraud detection services using Python and Java.",
+        "Education: Bachelor of Computer Science, 2016-2020",
+        "Skills: Python, Java, MySQL, Redis, Microservices",
+    ]
+    for offset, line in enumerate(lines):
+        page.insert_text((72, 72 + offset * 18), line)
+    path = tmp_path / "en.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = extract_text(path)
+
+    assert result.requires_ocr is False
+    assert result.pages[0].needs_ocr is False
+
+
+def test_text_resume_with_logo_is_not_ocred(tmp_path: Path) -> None:
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_text(
+        (72, 72),
+        "张三\n工作经历：某公司 风控工程师 5年\n技能：Python 风控 支付",
+        fontname="china-s",
+    )
+    # 角落放一个小 Logo，不应导致整页 OCR。
+    page.insert_image(
+        pymupdf.Rect(500, 700, 560, 760),
+        pixmap=_image_pixmap(60, 60),
+    )
+    path = tmp_path / "logo.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = extract_text(path)
+
+    assert result.requires_ocr is False
+    assert result.pages[0].needs_ocr is False
+
+
+def test_mixed_pdf_only_ocred_the_image_page(tmp_path: Path) -> None:
+    pdf = pymupdf.open()
+    text_page = pdf.new_page()
+    text_page.insert_text((72, 72), "张三\n风控工程师\nPython 支付风控", fontname="china-s")
+    image_page = pdf.new_page()
+    image_page.insert_image(image_page.rect, pixmap=_image_pixmap(600, 800))
+    path = tmp_path / "mixed.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = extract_text(path)
+
+    assert result.pages[0].needs_ocr is False
+    assert result.pages[1].needs_ocr is True
+    assert result.requires_ocr is True
+

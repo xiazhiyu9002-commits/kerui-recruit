@@ -15,6 +15,7 @@ from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.resumes.structured import ParsedExperience, ParsedResume
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
 from kerui_recruit.search.service import HybridSearchService
+from kerui_recruit.search.sync import IndexSyncService
 from kerui_recruit.storage.blobs import BlobStore
 from kerui_recruit.tasks.repository import TaskRepository
 
@@ -61,6 +62,7 @@ def build_services(tmp_path: Path) -> tuple[AppServices, ResumePipeline]:
         session_factory=factory,
         blob_store=blob_store,
         task_repository=TaskRepository(factory),
+        index_sync_service=IndexSyncService(session_factory=factory, index=index, embedding_provider=embedding),
         search_service=HybridSearchService(
             index=index,
             embedding_provider=embedding,
@@ -112,6 +114,7 @@ async def test_resume_import_reaches_task_status_and_search(tmp_path: Path) -> N
         assert task.json()["status"] == "PENDING"
 
         await pipeline.run(payload["revision_id"])
+        assert await services.index_sync_service.run_once(force=True) == 1
         searched = await client.post(
             "/api/search/candidates",
             json={
@@ -144,3 +147,69 @@ async def test_unsupported_upload_returns_stable_chinese_error(tmp_path: Path) -
     assert response.json()["code"] == "E_FILE_TYPE_UNSUPPORTED"
     assert response.json()["message"] == "仅支持 PDF、DOC 和 DOCX 简历"
     assert "Traceback" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_force_ocr_reparse_endpoint_is_idempotent(tmp_path: Path) -> None:
+    """重复点击强制 OCR 不应创建重复任务，且 payload 显式携带 force_ocr。"""
+    services, _ = build_services(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(services))
+    headers = {"X-Kerui-Session": "test-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        imported = await client.post(
+            "/api/resumes/import",
+            files={"file": ("张三.pdf", make_pdf_bytes(), "application/pdf")},
+            headers=headers,
+        )
+        revision_id = imported.json()["revision_id"]
+
+        first = await client.post(
+            f"/api/resumes/revisions/{revision_id}/reparse",
+            json={"force_ocr": True},
+            headers=headers,
+        )
+        second = await client.post(
+            f"/api/resumes/revisions/{revision_id}/reparse",
+            json={"force_ocr": True},
+            headers=headers,
+        )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["task_id"] == second.json()["task_id"]
+    task = services.task_repository.list()
+    reparse_tasks = [
+        entry for entry in task
+        if entry.idempotency_key == f"REPARSE_RESUME:{revision_id}:True"
+    ]
+    assert len(reparse_tasks) == 1
+    assert reparse_tasks[0].payload["force_ocr"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_accepts_new_filter_fields_without_type_error(tmp_path: Path) -> None:
+    """新过滤字段（多地点/意向地/排除技能）贯通请求模型，不产生重复传参 TypeError。"""
+    services, _ = build_services(tmp_path)
+    transport = httpx.ASGITransport(app=create_app(services))
+    headers = {"X-Kerui-Session": "test-token"}
+    async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+        response = await client.post(
+            "/api/search/candidates",
+            json={
+                "query": "Python",
+                "filters": {
+                    "locations": ["上海", "北京"],
+                    "preferred_locations": ["深圳"],
+                    "exclude_skills": ["Java"],
+                    "min_years": 3,
+                    "highest_degree": "BACHELOR",
+                },
+                "limit": 20,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "items" in body
+    assert "degraded_reasons" in body

@@ -71,8 +71,9 @@ class MailService:
             messages = [m for m in messages if pattern in m.subject.lower()]
 
         if sender_domains:
+            allowed = {d.strip().lstrip("@").lower() for d in sender_domains}
             messages = [
-                m for m in messages if _sender_domain(m.sender) in sender_domains
+                m for m in messages if _matches_sender(m.sender, allowed)
             ]
 
         with self.session_factory() as session:
@@ -98,8 +99,19 @@ class MailService:
 
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@([\w.-]+)")
+_FULL_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+")
 
 
 def _sender_domain(sender: str) -> str:
     match = _EMAIL_RE.search(sender)
     return match.group(1).lower() if match else ""
+
+
+def _sender_email(sender: str) -> str:
+    match = _FULL_EMAIL_RE.search(sender)
+    return match.group(0).lower() if match else ""
+
+
+def _matches_sender(sender: str, allowed: set[str]) -> bool:
+    """白名单可同时接受完整邮箱地址或发件域名。"""
+    return _sender_email(sender) in allowed or _sender_domain(sender) in allowed

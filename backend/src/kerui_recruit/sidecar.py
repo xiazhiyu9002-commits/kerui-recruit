@@ -93,7 +93,6 @@ def build_settings(options: RuntimeArgs) -> Settings:
         session_token=options.token,
         deepseek_api_key=secret_value("deepseek_api_key", "DEEPSEEK_API_KEY"),
         deepseek_base_url=value("deepseek_base_url", "DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com",
-        deepseek_model=value("deepseek_model", "DEEPSEEK_MODEL", "deepseek-v4-flash") or "deepseek-v4-flash",
         siliconflow_api_key=secret_value("siliconflow_api_key", "SILICONFLOW_API_KEY"),
         siliconflow_base_url=value("siliconflow_base_url", "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1") or "https://api.siliconflow.cn/v1",
         siliconflow_embedding_model=value("siliconflow_embedding_model", "SILICONFLOW_EMBEDDING_MODEL", "BAAI/bge-m3") or "BAAI/bge-m3",

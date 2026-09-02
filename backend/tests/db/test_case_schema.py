@@ -39,5 +39,5 @@ def test_case_links_candidate_and_jd_with_stage_events(tmp_path: Path) -> None:
         assert loaded.candidate.display_name == "张三"
         assert loaded.jd.title == "Java"
         assert loaded.stage == "待联系"
-        assert loaded.events[0].stage == "已推荐"
+        assert loaded.stage_events[0].stage == "已推荐"
         assert loaded.deleted_at is None

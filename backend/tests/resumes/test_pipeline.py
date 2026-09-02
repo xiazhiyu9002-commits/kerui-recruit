@@ -254,3 +254,40 @@ async def test_pipeline_extraction_does_not_block_desktop_api_loop(
     await task
 
     assert elapsed < 0.5
+
+
+@pytest.mark.asyncio
+async def test_cancelling_pipeline_does_not_leave_revision_processing(tmp_path: Path) -> None:
+    engine = create_engine_for(tmp_path / "db" / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    store = BlobStore(tmp_path / "blobs", tmp_path / "temp")
+    with factory() as session:
+        ingested = ResumeIngestService(session, store).ingest(
+            IngestResume(filename="candidate.pdf", content=make_pdf_bytes())
+        )
+
+    started = asyncio.Event()
+
+    class BlockingParser:
+        async def parse_resume(self, _text: str) -> ParsedResume:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    pipeline = ResumePipeline(
+        session_factory=factory,
+        blob_store=store,
+        parser=BlockingParser(),
+        embedding_provider=FakeEmbeddingProvider(dimension=16),
+    )
+    task = asyncio.create_task(pipeline.run(ingested.revision_id))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with factory() as session:
+        revision = session.get(ResumeRevision, ingested.revision_id)
+        assert revision.status == "FAILED"
+        assert revision.error_code == "E_TASK_CANCELLED"

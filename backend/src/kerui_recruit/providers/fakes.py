@@ -43,3 +43,8 @@ class FakeOCRProvider:
 
     async def extract(self, content: bytes, filename: str) -> str:
         return "张三 本科 6年 Java Python"
+
+    async def extract_pages(
+        self, content: bytes, filename: str, page_indexes: list[int]
+    ) -> list[str]:
+        return ["张三 本科 6年 Java Python"] * len(page_indexes)

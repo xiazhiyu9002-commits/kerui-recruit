@@ -10,7 +10,6 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 class UpdateSettingsRequest(BaseModel):
     deepseek_api_key: str | None = None
     deepseek_base_url: str | None = None
-    deepseek_model: str | None = None
     siliconflow_api_key: str | None = None
     siliconflow_base_url: str | None = None
     siliconflow_embedding_model: str | None = None

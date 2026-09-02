@@ -61,7 +61,7 @@ def test_ingest_creates_candidate_and_pending_parse_task(tmp_path: Path) -> None
         task = session.get(TaskRecord, result.task_id)
         assert candidate is not None and candidate.display_name == "李四"
         assert task is not None and task.status == "PENDING"
-        assert task.payload == {"revision_id": result.revision_id}
+        assert task.payload == {"revision_id": result.revision_id, "passive_match": True}
 
 
 def test_unsupported_file_type_is_rejected_before_writing(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,35 @@ async def test_worker_failure_schedules_a_durable_retry(tmp_path: Path) -> None:
         assert task.error_code == "E_TASK_HANDLER"
         assert task.next_retry_at is not None
         assert task.lease_owner is None
+
+
+@pytest.mark.asyncio
+async def test_running_cancel_stops_handler_without_killing_worker(tmp_path: Path) -> None:
+    engine = create_engine_for(tmp_path / "recruit.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    repo = TaskRepository(factory, lease_duration=timedelta(seconds=1))
+    task_id = repo.enqueue(TaskSpec("WAIT", "normal", 10, {}, "wait:one"))
+    started = asyncio.Event()
+    allow_write = asyncio.Event()
+    writes: list[str] = []
+
+    async def handler(payload):
+        started.set()
+        await allow_write.wait()
+        writes.append("published")
+
+    worker = TaskWorker(repository=repo, worker_id="worker", queues=("normal",),
+                        handlers={"WAIT": handler}, heartbeat_interval=0.01)
+    running = asyncio.create_task(worker.run_once())
+    await started.wait()
+    repo.cancel(task_id)
+    assert await asyncio.wait_for(running, 0.5) is True
+    assert writes == []
+    assert repo.list()[0].status == "CANCELLED"
+
+    second = repo.enqueue(TaskSpec("WAIT", "normal", 10, {}, "wait:two"))
+    allow_write.set()
+    assert await worker.run_once() is True
+    with factory() as session:
+        assert session.get(TaskRecord, second).status == "SUCCESS"

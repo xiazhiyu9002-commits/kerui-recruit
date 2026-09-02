@@ -19,4 +19,183 @@ def _upgrade_v1_to_v2(connection: Connection) -> None:
     )
 
 
-DEFAULT_UPGRADES = (Upgrade(1, 2, _upgrade_v1_to_v2),)
+def _upgrade_v2_to_v3(connection: Connection) -> None:
+    existing = {
+        row[1]
+        for row in connection.exec_driver_sql("PRAGMA table_info(bd_lead)").fetchall()
+    }
+    if "confidence" not in existing:
+        connection.exec_driver_sql("ALTER TABLE bd_lead ADD COLUMN confidence FLOAT")
+    if "is_hiring" not in existing:
+        connection.exec_driver_sql("ALTER TABLE bd_lead ADD COLUMN is_hiring BOOLEAN")
+    if "session_id" not in existing:
+        connection.exec_driver_sql("ALTER TABLE bd_lead ADD COLUMN session_id VARCHAR(36)")
+    if "synthesized_json" not in existing:
+        connection.exec_driver_sql("ALTER TABLE bd_lead ADD COLUMN synthesized_json JSON")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_bd_lead_session_id ON bd_lead (session_id)"
+    )
+
+
+def _upgrade_v3_to_v4(connection: Connection) -> None:
+    """引入可变面试轮次：stage_event 增加 round_no/round_name/result，并回填存量数据。"""
+    existing = {
+        row[1]
+        for row in connection.exec_driver_sql("PRAGMA table_info(stage_event)").fetchall()
+    }
+    if "round_no" not in existing:
+        connection.exec_driver_sql("ALTER TABLE stage_event ADD COLUMN round_no INTEGER")
+    if "round_name" not in existing:
+        connection.exec_driver_sql("ALTER TABLE stage_event ADD COLUMN round_name VARCHAR(64)")
+    if "result" not in existing:
+        connection.exec_driver_sql("ALTER TABLE stage_event ADD COLUMN result VARCHAR(16)")
+
+    # 存量「初试/复试/终试」映射为推进次数，Offer/入职/拒绝映射为结果。
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET round_no=0, round_name='简历筛选', result='推进' WHERE stage='已推荐'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET round_no=1, round_name='初试', result='推进' WHERE stage='初试'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET round_no=2, round_name='复试', result='推进' WHERE stage='复试'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET round_no=3, round_name='终试', result='推进' WHERE stage='终试'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET result='offer' WHERE stage='Offer'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET result='入职' WHERE stage='入职'"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET result='淘汰' WHERE stage IN ('客户拒绝','岗位关闭')"
+    )
+    connection.exec_driver_sql(
+        "UPDATE stage_event SET result='拒接' WHERE stage='候选人拒绝'"
+    )
+
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_stage_event_round_no ON stage_event (round_no)"
+    )
+
+
+def _upgrade_v4_to_v5(connection: Connection) -> None:
+    """简历版本新增结构化失败原因字段，用于区分提取/OCR/结构化等失败。"""
+    existing = {
+        row[1]
+        for row in connection.exec_driver_sql("PRAGMA table_info(resume_revision)").fetchall()
+    }
+    if "error_code" not in existing:
+        connection.exec_driver_sql(
+            "ALTER TABLE resume_revision ADD COLUMN error_code VARCHAR(80)"
+        )
+    if "error_message" not in existing:
+        connection.exec_driver_sql(
+            "ALTER TABLE resume_revision ADD COLUMN error_message TEXT"
+        )
+
+
+def _add_column(connection: Connection, table: str, column: str, ddl: str) -> None:
+    existing = {
+        row[1]
+        for row in connection.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing:
+        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _upgrade_v5_to_v6(connection: Connection) -> None:
+    """可变面试流程：新增轮次实例(case_round)与事件(case_event)，保守迁移旧 stage_event。
+
+    旧「初试/复试/终试」只迁移为「进入面试轮」，不伪造通过/未通过结果；
+    Offer 迁移为「已发放」事实，接受/拒绝状态未知。
+    """
+    _add_column(connection, "hiring_process", "version", "INTEGER NOT NULL DEFAULT 1")
+    _add_column(connection, "hiring_process", "deleted_at", "DATETIME")
+    _add_column(connection, "process_round", "round_type", "VARCHAR(32)")
+    _add_column(connection, "candidate_job_case", "template_id", "VARCHAR(36)")
+
+    # 面试阶段：先建 case_round 再建进入事件（复用 stage_event.id 作为稳定 round_id）。
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_round "
+        "(id, case_id, round_no, round_name, round_type, sort_order, source, skipped, created_at, updated_at) "
+        "SELECT id, case_id, COALESCE(round_no, 0), COALESCE(round_name, stage), NULL, "
+        "COALESCE(round_no, 0), 'legacy', 0, created_at, updated_at "
+        "FROM stage_event WHERE stage IN ('初试','复试','终试')"
+    )
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_event "
+        "(id, case_id, event_type, case_round_id, occurred_at, recorded_at, result, note, status, created_at, updated_at) "
+        "SELECT id, case_id, 'INTERVIEW_ENTERED', id, created_at, created_at, NULL, note, 'active', created_at, updated_at "
+        "FROM stage_event WHERE stage IN ('初试','复试','终试')"
+    )
+
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_event "
+        "(id, case_id, event_type, case_round_id, occurred_at, recorded_at, result, note, status, created_at, updated_at) "
+        "SELECT id, case_id, 'RECOMMENDED', NULL, created_at, created_at, NULL, note, 'active', created_at, updated_at "
+        "FROM stage_event WHERE stage='已推荐'"
+    )
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_event "
+        "(id, case_id, event_type, case_round_id, occurred_at, recorded_at, result, note, status, created_at, updated_at) "
+        "SELECT id, case_id, 'OFFER', NULL, created_at, created_at, '已发放', note, 'active', created_at, updated_at "
+        "FROM stage_event WHERE stage='Offer'"
+    )
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_event "
+        "(id, case_id, event_type, case_round_id, occurred_at, recorded_at, result, note, status, created_at, updated_at) "
+        "SELECT id, case_id, 'ONBOARDED', NULL, created_at, created_at, NULL, note, 'active', created_at, updated_at "
+        "FROM stage_event WHERE stage='入职'"
+    )
+    connection.exec_driver_sql(
+        "INSERT OR IGNORE INTO case_event "
+        "(id, case_id, event_type, case_round_id, occurred_at, recorded_at, result, note, status, created_at, updated_at) "
+        "SELECT id, case_id, 'EXIT', NULL, created_at, created_at, NULL, note, 'active', created_at, updated_at "
+        "FROM stage_event WHERE stage IN ('客户拒绝','候选人拒绝','岗位关闭')"
+    )
+
+
+def _upgrade_v6_to_v7(connection: Connection) -> None:
+    _add_column(connection, "candidate", "workflow_previous_status", "VARCHAR(32)")
+    _add_column(connection, "candidate_contact", "manual_fields", "JSON")
+    for field in ("manual_overrides", "extraction_diagnostics", "review_data"):
+        _add_column(connection, "resume_revision", field, "JSON")
+    _add_column(connection, "candidate_job_case", "template_version", "INTEGER")
+    _add_column(connection, "candidate_job_case", "template_snapshot", "JSON")
+    _add_column(connection, "case_round", "definition_key", "VARCHAR(200)")
+    _add_column(connection, "reminder", "case_id", "VARCHAR(36) REFERENCES candidate_job_case(id) ON DELETE CASCADE")
+    _add_column(connection, "reminder", "paused_by_workflow", "BOOLEAN NOT NULL DEFAULT 0")
+    # The old desktop sent unzoned datetime-local values. Preserve its displayed
+    # wall clock; new rows are explicitly normalized to UTC by ReminderService.
+    _add_column(connection, "reminder", "time_basis", "VARCHAR(24) NOT NULL DEFAULT 'LEGACY_SHANGHAI'")
+    connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_reminder_case_id ON reminder (case_id)")
+
+
+def _upgrade_v7_to_v8(connection: Connection) -> None:
+    """BD 线索增加岗位介绍字段：开放时间、薪资范围、职级、要求。"""
+    _add_column(connection, "bd_lead", "posted_time", "VARCHAR(100)")
+    _add_column(connection, "bd_lead", "salary_range", "VARCHAR(100)")
+    _add_column(connection, "bd_lead", "level", "VARCHAR(100)")
+    _add_column(connection, "bd_lead", "requirements", "JSON")
+
+
+def _upgrade_v8_to_v9(connection: Connection) -> None:
+    """移除匹配结果的「短名单」「排除」标记：存量统一回退为「未处理」。"""
+    connection.exec_driver_sql(
+        "UPDATE match_result SET status='未处理' WHERE status IN ('短名单','排除')"
+    )
+
+
+DEFAULT_UPGRADES = (
+    Upgrade(1, 2, _upgrade_v1_to_v2),
+    Upgrade(2, 3, _upgrade_v2_to_v3),
+    Upgrade(3, 4, _upgrade_v3_to_v4),
+    Upgrade(4, 5, _upgrade_v4_to_v5),
+    Upgrade(5, 6, _upgrade_v5_to_v6),
+    Upgrade(6, 7, _upgrade_v6_to_v7),
+    Upgrade(7, 8, _upgrade_v7_to_v8),
+    Upgrade(8, 9, _upgrade_v8_to_v9),
+)
