@@ -77,9 +77,15 @@ class ImapLibProvider(ImapProvider):
         UIDVALIDITY token changes then, letting callers detect stale cursors.
         """
         assert self._client is not None
-        for item in self._client.response("UIDVALIDITY") or ():
+        raw = self._client.response("UIDVALIDITY")
+        if not raw:
+            return None
+        # Python 3.12 的 imaplib response() 返回 (code, [data]) 元组；
+        # 兼容旧版本直接返回 [data] 的形式。
+        data = raw[1] if isinstance(raw, tuple) and len(raw) >= 2 else raw
+        for item in data:
             text = item.decode("utf-8", "replace") if isinstance(item, bytes) else str(item)
-            match = re.search(r"UIDVALIDITY\s+(\d+)", text)
+            match = re.search(r"(\d+)", text)
             if match:
                 return int(match.group(1))
         return None
