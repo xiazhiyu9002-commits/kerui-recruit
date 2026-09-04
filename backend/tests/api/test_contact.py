@@ -100,6 +100,8 @@ async def test_contact_round_trip_encrypts_at_rest(tmp_path: Path) -> None:
         assert contact.phone_encrypted != "13800138000"
         assert encryption.decrypt(contact.email_encrypted) == "zhang@example.com"
         assert encryption.decrypt(contact.phone_encrypted) == "13800138000"
+        assert contact.email_fingerprint == "zhang@example.com"
+        assert contact.phone_fingerprint == "13800138000"
 
 
 @pytest.mark.asyncio

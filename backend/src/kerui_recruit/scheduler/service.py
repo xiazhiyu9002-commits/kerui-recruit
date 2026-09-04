@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.backup.service import BackupService
 from kerui_recruit.mail.ingest import MailIngestService
+from kerui_recruit.mail.resume_gate import ResumeGate
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.reminders.mail_service import ReminderMailService
 from kerui_recruit.reminders.service import ReminderService
@@ -44,6 +45,7 @@ class SchedulerService:
         backup_service: BackupService | None = None,
         soft_delete_service: SoftDeleteService | None = None,
         sender_domains: set[str] | None = None,
+        resume_gate: ResumeGate | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
@@ -53,6 +55,7 @@ class SchedulerService:
         self.backup_service = backup_service
         self.soft_delete_service = soft_delete_service
         self.sender_domains = sender_domains
+        self.resume_gate = resume_gate
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20
@@ -83,7 +86,10 @@ class SchedulerService:
         """Ingest resumes from the agent mailbox. Returns new revision ids."""
         if self.mail_ingest_service is None:
             return []
-        return self.mail_ingest_service.poll_and_ingest(sender_domains=self.sender_domains)
+        return self.mail_ingest_service.poll_and_ingest(
+            sender_domains=self.sender_domains,
+            resume_gate=self.resume_gate,
+        )
 
     def send_reminder_mail(self) -> list[str]:
         """Send due reminders as email. Returns sent reminder ids."""

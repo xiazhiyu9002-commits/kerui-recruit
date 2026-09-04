@@ -16,6 +16,8 @@ from kerui_recruit.api.cases import router as cases_router
 from kerui_recruit.api.correction import router as correction_router
 from kerui_recruit.api.dashboard import router as dashboard_router
 from kerui_recruit.api.diagnostics import router as diagnostics_router
+from kerui_recruit.api.directions import router as directions_router
+from kerui_recruit.api.duplicates import router as duplicates_router
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.jd import router as jd_router
 from kerui_recruit.api.indexes import router as indexes_router
@@ -33,6 +35,7 @@ from kerui_recruit.api.soft_delete import router as soft_delete_router
 from kerui_recruit.api.tasks import router as tasks_router
 from kerui_recruit.health.service import HealthService
 from kerui_recruit.resumes.ingest import UnsupportedResumeType
+from kerui_recruit.providers.errors import ProviderError
 from kerui_recruit.match.service import MatchEligibilityError, ReverseMatchUnavailableError
 from kerui_recruit.cases.service import CaseStateError
 
@@ -109,6 +112,11 @@ def create_app(
         return await handle_api_error(request, ApiError(503, "E_REVERSE_MATCH_UNAVAILABLE",
             "岗位索引尚未就绪、不兼容或匹配超时；请检查索引同步状态后重试"))
 
+    @app.exception_handler(ProviderError)
+    async def handle_provider_error(request: Request, error: ProviderError) -> JSONResponse:
+        status = 503 if error.retryable else 502
+        return await handle_api_error(request, ApiError(status, error.code, error.user_message))
+
     @app.exception_handler(LookupError)
     async def handle_lookup_error(request: Request, error: LookupError) -> JSONResponse:
         return JSONResponse(
@@ -166,6 +174,8 @@ def create_app(
         app.include_router(migration_router)
         app.include_router(onboarding_router)
         app.include_router(org_router)
+        app.include_router(duplicates_router)
+        app.include_router(directions_router)
 
     # Added last so CORS is outermost and answers preflight OPTIONS before the
     # session-token guard. The sidecar binds loopback only and authenticates

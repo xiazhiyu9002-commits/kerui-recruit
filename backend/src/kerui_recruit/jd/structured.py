@@ -35,3 +35,18 @@ class ParsedJd(BaseModel):
 class JdParser(Protocol):
     async def parse_jd(self, text: str) -> ParsedJd: ...
     async def split_jds(self, text: str) -> list[str]: ...
+
+
+def build_jd_direction_input(parsed: ParsedJd):
+    """从解析后的 JD 构建方向分类输入（岗位标题/职责/必须要求/技能/行业/场景）。"""
+    from kerui_recruit.direction.classifier import DirectionClassificationInput
+
+    duties = " ".join(parsed.core_duties) + " " + parsed.summary
+    must_values = " ".join(r.value for r in parsed.requirements if r.kind == "MUST")
+    return DirectionClassificationInput(
+        recent_title=parsed.title,
+        recent_duties=(duties + " " + must_values).strip(),
+        skills=tuple(parsed.required_skills) + tuple(parsed.tech_direction),
+        industry=parsed.industry or "",
+        business_scene=" ".join(parsed.plus_industry),
+    )

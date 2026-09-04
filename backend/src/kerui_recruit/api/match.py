@@ -14,6 +14,7 @@ from kerui_recruit.db.models import (
     MatchRun,
     ResumeRevision,
 )
+from kerui_recruit.search.contracts import resolve_search_status
 
 
 router = APIRouter(prefix="/api/match", tags=["match"])
@@ -38,11 +39,22 @@ class MatchItem(BaseModel):
     highest_degree: str | None
     location: str | None
     result_id: str | None = None
+    jd_primary_direction: str | None = None
+    candidate_primary_direction: str | None = None
+    candidate_direction_source: str | None = None
+    direction_status: str | None = None
+    direction_compatibility: float | None = None
+    direction_explanation: str | None = None
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
 
 
 class MatchResponse(BaseModel):
-    run_id: str
+    run_id: str | None
     items: list[MatchItem]
+    status: str = "success"
+    empty_reason: str | None = None
+    degraded_reasons: list[str] = Field(default_factory=list)
 
 
 class ReverseMatchItem(BaseModel):
@@ -60,10 +72,14 @@ async def match_jd(command: MatchJdRequest, request: Request) -> MatchResponse:
         revision_id=command.revision_id,
         limit=command.limit,
     )
-    recorded = services.match_service.record_run(
-        revision_id=command.revision_id,
-        hits=page.items,
-    )
+    status = resolve_search_status(page.items, page.empty_reason, page.degraded_reasons)
+    # index_not_ready / service_error 不应写入看似正常的空 match_run。
+    recorded = None
+    if status not in ("index_not_ready", "service_error"):
+        recorded = services.match_service.record_run(
+            revision_id=command.revision_id,
+            hits=page.items,
+        )
     candidate_ids = [hit.candidate_id for hit in page.items]
     revision_ids = [hit.revision_id for hit in page.items]
     with services.session_factory() as session:
@@ -88,38 +104,51 @@ async def match_jd(command: MatchJdRequest, request: Request) -> MatchResponse:
             else {}
         )
     encryption = services.encryption_service
+
+    def _item(hit) -> MatchItem:
+        match_score = services.match_service.score(command.revision_id, hit)
+        return MatchItem(
+            candidate_id=hit.candidate_id,
+            revision_id=hit.revision_id,
+            name=names.get(hit.candidate_id, hit.candidate_id),
+            phone=(
+                encryption.decrypt(phones.get(hit.candidate_id))
+                if encryption is not None and phones.get(hit.candidate_id)
+                else None
+            ),
+            parsed_data=(
+                revisions[hit.revision_id].parsed_data
+                if hit.revision_id in revisions
+                else None
+            ),
+            original_filename=(
+                revisions[hit.revision_id].original_filename
+                if hit.revision_id in revisions
+                else None
+            ),
+            content=hit.content,
+            score=match_score.total,
+            matched_channels=hit.matched_channels,
+            total_years=hit.total_years,
+            highest_degree=hit.highest_degree,
+            location=hit.location,
+            result_id=recorded.result_ids.get(hit.candidate_id) if recorded else None,
+            jd_primary_direction=match_score.jd_primary_direction,
+            candidate_primary_direction=match_score.candidate_primary_direction,
+            candidate_direction_source=match_score.candidate_direction_source,
+            direction_status=match_score.direction_status,
+            direction_compatibility=match_score.breakdown.get("direction_compatibility"),
+            direction_explanation=match_score.direction_explanation,
+            matched_skills=list(match_score.matched_skills),
+            missing_skills=list(match_score.missing_skills),
+        )
+
     return MatchResponse(
-        run_id=recorded.run_id,
-        items=[
-            MatchItem(
-                candidate_id=hit.candidate_id,
-                revision_id=hit.revision_id,
-                name=names.get(hit.candidate_id, hit.candidate_id),
-                phone=(
-                    encryption.decrypt(phones.get(hit.candidate_id))
-                    if encryption is not None and phones.get(hit.candidate_id)
-                    else None
-                ),
-                parsed_data=(
-                    revisions[hit.revision_id].parsed_data
-                    if hit.revision_id in revisions
-                    else None
-                ),
-                original_filename=(
-                    revisions[hit.revision_id].original_filename
-                    if hit.revision_id in revisions
-                    else None
-                ),
-                content=hit.content,
-                score=services.match_service.score(command.revision_id, hit).total,
-                matched_channels=hit.matched_channels,
-                total_years=hit.total_years,
-                highest_degree=hit.highest_degree,
-                location=hit.location,
-                result_id=recorded.result_ids.get(hit.candidate_id),
-            )
-            for hit in page.items
-        ],
+        run_id=recorded.run_id if recorded else None,
+        status=status,
+        empty_reason=page.empty_reason,
+        degraded_reasons=list(page.degraded_reasons),
+        items=[_item(hit) for hit in page.items],
     )
 
 
@@ -230,6 +259,14 @@ class MatchResultItem(BaseModel):
     total_years: float | None
     highest_degree: str | None
     location: str | None
+    direction_compatibility: float | None = None
+    jd_primary_direction: str | None = None
+    candidate_primary_direction: str | None = None
+    candidate_direction_source: str | None = None
+    direction_status: str | None = None
+    direction_explanation: str | None = None
+    matched_skills: list[str] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
 
 
 class MatchResultGroup(BaseModel):
@@ -293,6 +330,7 @@ def list_match_results(
                 if result.resume_revision_id
                 else None
             )
+            breakdown = result.score_breakdown or {}
             group.items.append(
                 MatchResultItem(
                     result_id=result.id,
@@ -311,6 +349,14 @@ def list_match_results(
                         if revision and revision.parsed_data
                         else None
                     ),
+                    direction_compatibility=breakdown.get("direction_compatibility"),
+                    jd_primary_direction=breakdown.get("jd_primary_direction"),
+                    candidate_primary_direction=breakdown.get("candidate_primary_direction"),
+                    candidate_direction_source=breakdown.get("candidate_direction_source"),
+                    direction_status=breakdown.get("direction_status"),
+                    direction_explanation=breakdown.get("direction_explanation"),
+                    matched_skills=breakdown.get("matched_skills") or [],
+                    missing_skills=breakdown.get("missing_skills") or [],
                 )
             )
     return MatchResultsResponse(groups=list(groups.values()))

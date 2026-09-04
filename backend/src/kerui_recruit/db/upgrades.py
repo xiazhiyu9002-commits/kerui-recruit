@@ -189,6 +189,38 @@ def _upgrade_v8_to_v9(connection: Connection) -> None:
     )
 
 
+def _upgrade_v9_to_v10(connection: Connection) -> None:
+    """mapping 人员绑定人才库：employee 增加候选人与加密电话。"""
+    _add_column(connection, "employee", "candidate_id", "VARCHAR(36) REFERENCES candidate(id) ON DELETE SET NULL")
+    _add_column(connection, "employee", "phone_encrypted", "TEXT")
+
+
+def _upgrade_v10_to_v11(connection: Connection) -> None:
+    """候选人联系方式增加不可逆规范化指纹，用于本地身份匹配。"""
+    _add_column(connection, "candidate_contact", "phone_fingerprint", "VARCHAR(64)")
+    _add_column(connection, "candidate_contact", "email_fingerprint", "VARCHAR(255)")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_candidate_contact_phone_fingerprint "
+        "ON candidate_contact (phone_fingerprint)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_candidate_contact_email_fingerprint "
+        "ON candidate_contact (email_fingerprint)"
+    )
+
+
+def _upgrade_v11_to_v12(connection: Connection) -> None:
+    """公司保存组织导入的原始文本，供平台预览（不参与导出）。"""
+    _add_column(connection, "company", "source_text", "TEXT")
+
+
+def _upgrade_v12_to_v13(connection: Connection) -> None:
+    """JD 版本新增方向相关 JSON 列；索引同步新增 requested_mode（FULL/METADATA）。"""
+    _add_column(connection, "jd_revision", "review_data", "JSON")
+    _add_column(connection, "jd_revision", "manual_overrides", "JSON")
+    _add_column(connection, "index_sync", "requested_mode", "VARCHAR(16) NOT NULL DEFAULT 'FULL'")
+
+
 DEFAULT_UPGRADES = (
     Upgrade(1, 2, _upgrade_v1_to_v2),
     Upgrade(2, 3, _upgrade_v2_to_v3),
@@ -198,4 +230,8 @@ DEFAULT_UPGRADES = (
     Upgrade(6, 7, _upgrade_v6_to_v7),
     Upgrade(7, 8, _upgrade_v7_to_v8),
     Upgrade(8, 9, _upgrade_v8_to_v9),
+    Upgrade(9, 10, _upgrade_v9_to_v10),
+    Upgrade(10, 11, _upgrade_v10_to_v11),
+    Upgrade(11, 12, _upgrade_v11_to_v12),
+    Upgrade(12, 13, _upgrade_v12_to_v13),
 )

@@ -41,7 +41,7 @@ class OpenAICompatibleClient:
                     "response_format": {"type": "json_object"},
                     "temperature": temperature,
                 },
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
             )
         except httpx.RequestError as error:
             raise ProviderError(

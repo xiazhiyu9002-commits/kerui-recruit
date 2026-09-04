@@ -62,6 +62,9 @@ class CandidateContact(IdMixin, Base):
     phone_encrypted: Mapped[str | None] = mapped_column(Text)
     email_confidence: Mapped[float | None] = mapped_column(Float)
     phone_confidence: Mapped[float | None] = mapped_column(Float)
+    # 不可逆规范化指纹，用于本地候选人身份匹配（不承载唯一约束，历史数据可能重复）。
+    phone_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    email_fingerprint: Mapped[str | None] = mapped_column(String(255), index=True)
     manual_fields: Mapped[list[str] | None] = mapped_column(JSON)
     candidate: Mapped[Candidate] = relationship(back_populates="contact")
 
@@ -122,6 +125,20 @@ class ResumeRevision(IdMixin, Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     document: Mapped[ResumeDocument] = relationship(back_populates="revisions")
     blob: Mapped[Blob] = relationship(back_populates="revisions")
+
+
+class ResumeImportClaim(IdMixin, Base):
+    """数据库级导入幂等声明：同一 content_sha256 只能成功声明一次。"""
+
+    __tablename__ = "resume_import_claim"
+    __table_args__ = (
+        UniqueConstraint("content_sha256", name="uq_resume_import_claim_sha"),
+    )
+
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_id: Mapped[str | None] = mapped_column(String(36))
+    revision_id: Mapped[str | None] = mapped_column(String(36))
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
 
 
 class TaskRecord(IdMixin, Base):
@@ -219,6 +236,8 @@ class JdRevision(IdMixin, Base):
     location: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    review_data: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    manual_overrides: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     jd: Mapped[Jd] = relationship(back_populates="revisions")
     requirements: Mapped[list[JdRequirement]] = relationship(
         back_populates="revision",
@@ -590,6 +609,7 @@ class IndexSyncRecord(IdMixin, Base):
     __table_args__ = (UniqueConstraint("entity_type", "entity_id", name="uq_index_sync_entity"),)
     entity_type: Mapped[str] = mapped_column(String(24), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    requested_mode: Mapped[str] = mapped_column(String(16), default="FULL", nullable=False)
     requested_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     applied_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False, index=True)
@@ -667,6 +687,7 @@ class Company(IdMixin, Base):
     __tablename__ = "company"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_text: Mapped[str | None] = mapped_column(Text)
     departments: Mapped[list[Department]] = relationship(
         back_populates="company",
         cascade="all, delete-orphan",
@@ -737,6 +758,10 @@ class Employee(IdMixin, Base):
         ForeignKey("department.id", ondelete="CASCADE"),
         index=True,
     )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate.id", ondelete="SET NULL"),
+        index=True,
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     title: Mapped[str | None] = mapped_column(String(200))
     job_level: Mapped[str | None] = mapped_column(String(32))
@@ -751,6 +776,7 @@ class Employee(IdMixin, Base):
     intention: Mapped[str | None] = mapped_column(Text)
     remark: Mapped[str | None] = mapped_column(Text)
     contact: Mapped[str | None] = mapped_column(Text)
+    phone_encrypted: Mapped[str | None] = mapped_column(Text)
     is_key: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     company: Mapped[Company] = relationship(back_populates="employees")

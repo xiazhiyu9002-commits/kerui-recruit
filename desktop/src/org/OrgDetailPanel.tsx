@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  BindEmployeeResult,
   OrgDepartment,
   OrgEmployee,
   OrgTreeNode,
@@ -61,6 +62,8 @@ interface OrgDetailPanelProps {
   onUpdateEmployee: (id: string, changes: UpdateOrgEmployeeInput) => void;
   onUpdateDepartment: (id: string, changes: UpdateOrgDepartmentInput) => void;
   onDelete: (node: OrgTreeNode) => void;
+  onBindEmployee: (employeeId: string, phone: string, name: string) => Promise<BindEmployeeResult>;
+  onPreviewResume?: (revisionId: string, name: string) => void;
   onCollapse?: () => void;
 }
 
@@ -74,8 +77,19 @@ export function OrgDetailPanel({
   onUpdateEmployee,
   onUpdateDepartment,
   onDelete,
+  onBindEmployee,
+  onPreviewResume,
   onCollapse,
 }: OrgDetailPanelProps) {
+  const [bindPhone, setBindPhone] = useState("");
+  const [bindBusy, setBindBusy] = useState(false);
+  const [bindResult, setBindResult] = useState<BindEmployeeResult | null>(null);
+
+  useEffect(() => {
+    setBindPhone("");
+    setBindResult(null);
+  }, [employee?.id]);
+
   if (!node) {
     return (
       <div className="org-detail org-detail--empty">
@@ -154,6 +168,69 @@ export function OrgDetailPanel({
           <Field label="跳槽意向" value={employee.intention} sensitive onChange={(v) => onUpdateEmployee(employee.id, { intention: v.trim() || null })} />
           <Field label="联系方式" value={employee.contact} sensitive onChange={(v) => onUpdateEmployee(employee.id, { contact: v.trim() || null })} />
           <Field label="备注" value={employee.remark} sensitive onChange={(v) => onUpdateEmployee(employee.id, { remark: v.trim() || null })} />
+
+          <h4>绑定人才库</h4>
+          {employee.candidate_id && employee.candidate_name ? (
+            <div role="status">
+              <p className="muted">已绑定候选人：{employee.candidate_name}</p>
+              <div className="case-actions">
+                {employee.current_revision_id && onPreviewResume && (
+                  <button
+                    type="button"
+                    className="detail-button"
+                    onClick={() => onPreviewResume(employee.current_revision_id as string, employee.candidate_name ?? "")}
+                  >
+                    预览简历
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <p className="muted">未绑定候选人</p>
+          )}
+          <div className="jd-row">
+            <input
+              value={bindPhone}
+              onChange={(e) => setBindPhone(e.target.value)}
+              placeholder="电话（必填）"
+              aria-label="绑定电话"
+            />
+            <button
+              type="button"
+              className="detail-button"
+              disabled={bindBusy || !bindPhone.trim()}
+              onClick={() => {
+                setBindBusy(true);
+                void onBindEmployee(employee.id, bindPhone.trim(), employee.name)
+                  .then((result) => setBindResult(result))
+                  .finally(() => setBindBusy(false));
+              }}
+            >
+              {bindBusy ? "绑定中…" : "绑定"}
+            </button>
+          </div>
+          {bindResult && (
+            <div role="status">
+              <p className="muted">
+                {bindResult.matched
+                  ? `已绑定：${bindResult.candidate_name ?? ""}${bindResult.name_mismatch ? "（姓名不一致，以电话为准）" : ""}`
+                  : "未匹配到人才库候选人，请先录入人才库"}
+              </p>
+              {bindResult.matched && (
+                <div className="case-actions">
+                  {bindResult.current_revision_id && onPreviewResume && (
+                    <button
+                      type="button"
+                      className="detail-button"
+                      onClick={() => onPreviewResume(bindResult.current_revision_id as string, bindResult.candidate_name ?? "")}
+                    >
+                      预览简历
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

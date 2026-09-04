@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, replace
 
 from kerui_recruit.search.contracts import CandidateFilters
+from kerui_recruit.search.degrees import DEGREE_ALIASES, normalize_degree
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,14 +12,6 @@ class ParsedQuery:
     keywords: str
     filters: CandidateFilters
 
-
-# 学历别名 -> 规范值。排序保证长 token 优先（"本科" vs "博士" 无重叠，但保留按长度）。
-_DEGREE_MAP = {
-    "博士": "DOCTORATE", "phd": "DOCTORATE", "doctorate": "DOCTORATE",
-    "硕士": "MASTER", "master": "MASTER",
-    "本科": "BACHELOR", "学士": "BACHELOR", "bachelor": "BACHELOR",
-    "大专": "ASSOCIATE", "专科": "ASSOCIATE", "associate": "ASSOCIATE",
-}
 
 _LOCATIONS = (
     "北京", "上海", "深圳", "广州", "杭州", "成都", "南京", "武汉",
@@ -182,7 +175,7 @@ def _parse_degree(text: str) -> tuple[str | None, bool]:
     # 精确限定：仅/只/只要/限定 + 学历（「必须」是强调，不触发精确限定）。
     exact = re.search(r"(?:仅|只|只要|限定)\s*(本科|硕士|博士|大专|学士|专科)", text)
     if exact:
-        return _DEGREE_MAP.get(exact.group(1)), True
+        return normalize_degree(exact.group(1)), True
 
     # 优先：软条件，不产生硬过滤。
     if re.search(r"(本科|硕士|博士|大专|学士|专科)\s*优先", text):
@@ -230,7 +223,7 @@ def _parse_excludes(text: str) -> tuple[str, ...]:
 def _match_degree(text: str) -> str | None:
     folded = text.casefold()
     for token, normalized in sorted(
-        _DEGREE_MAP.items(), key=lambda item: len(item[0]), reverse=True
+        DEGREE_ALIASES.items(), key=lambda item: len(item[0]), reverse=True
     ):
         if token.casefold() in folded:
             return normalized
@@ -256,7 +249,7 @@ def _strip_conditions(text: str) -> str:
     cleaned = _SOFT_NEGATE_DEGREE_RE.sub(" ", cleaned)
     cleaned = _SOFT_NEGATE_RE.sub(" ", cleaned)
     cleaned = _EXCLUDE_RE.sub(" ", cleaned)
-    for token in _DEGREE_MAP:
+    for token in DEGREE_ALIASES:
         cleaned = re.sub(re.escape(token), " ", cleaned, flags=re.IGNORECASE)
     for location in _LOCATIONS:
         cleaned = cleaned.replace(location, " ")

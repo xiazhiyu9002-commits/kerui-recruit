@@ -262,6 +262,17 @@ class TaskRepository:
                 ).all()
             )
 
+    def list_by_ids(self, task_ids: list[str]) -> list[TaskRecord]:
+        """Return tasks by ID regardless of how recently they were created."""
+        if not task_ids:
+            return []
+        with self.session_factory() as session:
+            return list(
+                session.scalars(
+                    select(TaskRecord).where(TaskRecord.id.in_(task_ids))
+                ).all()
+            )
+
     @staticmethod
     def _owned_running_task(
         session: Session,

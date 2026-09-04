@@ -7,6 +7,7 @@ import pytest
 from kerui_recruit.providers.fakes import FakeRerankerProvider
 from kerui_recruit.search.contracts import CandidateFilters, SearchChunk
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
+from kerui_recruit.search.observer import InMemorySearchObserver
 from kerui_recruit.search.service import HybridSearchService
 
 
@@ -43,6 +44,21 @@ async def test_chunk_heavy_candidate_does_not_consume_candidate_limit(tmp_path):
     page = await service(index).search("", CandidateFilters(), limit=2)
     assert {hit.candidate_id for hit in page.items} == {"a", "b"}
     assert {row["candidate_id"] for row in index.search_vector((1., 0.), CandidateFilters(), 2)} == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_observer_none_matches_results_and_injected_observer_collects_phases(tmp_path):
+    index = LanceDBSearchIndex(tmp_path, vector_dimension=2)
+    index.upsert([chunk("a", 0, "Java 后端"), chunk("b", 0, "Python 算法")])
+    svc = service(index)
+    baseline = await svc.search("Java", CandidateFilters(), limit=5)
+    observer = InMemorySearchObserver()
+    observed = await svc.search("Java", CandidateFilters(), limit=5, observer=observer)
+    # observer=None 与注入 observer 的结果完全一致。
+    assert [h.candidate_id for h in baseline.items] == [h.candidate_id for h in observed.items]
+    # 注入 observer 后才采集阶段耗时，且覆盖正式代码路径的单调时钟分段。
+    assert observer.events > 0
+    assert {"fts", "embedding", "vector", "fusion", "rerank", "direction_boost"} <= set(observer.phases)
 
 
 def test_all_preferred_locations_are_searchable_without_matching_current_city(tmp_path):

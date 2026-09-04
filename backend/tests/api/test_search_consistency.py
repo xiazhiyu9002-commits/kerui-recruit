@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kerui_recruit.api.search import router
 from kerui_recruit.db.base import Base
-from kerui_recruit.db.models import Blob, Candidate, ResumeDocument, ResumeRevision
+from kerui_recruit.db.models import Blob, Candidate, CandidateContact, ResumeDocument, ResumeRevision
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.providers.fakes import FakeRerankerProvider
 from kerui_recruit.search.contracts import SearchChunk, SearchPage
@@ -160,3 +160,13 @@ async def test_http_pending_projection_never_returns_stale_same_revision_filters
         enqueue_sync(session, "candidate", "c0")
     result = await post(app, query="Python", filters={"min_years": 5})
     assert result["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_http_dedup_candidates_sharing_contact_fingerprint(tmp_path):
+    app, factory, _ = setup_app(tmp_path, 2)
+    with factory.begin() as session:
+        session.add(CandidateContact(candidate_id="c0", phone_fingerprint="13800138000"))
+        session.add(CandidateContact(candidate_id="c1", phone_fingerprint="13800138000"))
+    result = await post(app, query="Python")
+    assert [item["candidate_id"] for item in result["items"]] == ["c0"]

@@ -104,6 +104,69 @@ async def test_old_embedding_completion_cannot_publish_over_new_state(setup):
 
 
 @pytest.mark.asyncio
+async def test_enqueue_sync_mode_state_machine(tmp_path):
+    engine = create_engine_for(tmp_path / "db.sqlite3")
+    migrate(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory() as session, session.begin():
+        c1 = Candidate(display_name="T1", status="AVAILABLE")
+        c2 = Candidate(display_name="T2", status="AVAILABLE")
+        session.add_all([c1, c2])
+        session.flush()
+        id1, id2 = c1.id, c2.id
+
+    def job(entity_id):
+        with factory() as session:
+            j = session.scalar(select(IndexSyncRecord).where(
+                IndexSyncRecord.entity_type == "candidate",
+                IndexSyncRecord.entity_id == entity_id))
+            return (j.requested_mode, j.requested_version, j.applied_version) if j else None
+
+    # 1. 无记录 + METADATA → METADATA
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id1, mode="METADATA")
+    assert job(id1) == ("METADATA", 1, 0)
+
+    # 2. 已同步（applied==requested）+ FULL → FULL
+    with factory() as session, session.begin():
+        session.scalar(select(IndexSyncRecord).where(IndexSyncRecord.entity_id == id1)).applied_version = 1
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id1, mode="FULL")
+    assert job(id1) == ("FULL", 2, 1)
+
+    # 3. 已同步 FULL + METADATA → METADATA（关键回归）
+    with factory() as session, session.begin():
+        session.scalar(select(IndexSyncRecord).where(IndexSyncRecord.entity_id == id1)).applied_version = 2
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id1, mode="METADATA")
+    assert job(id1) == ("METADATA", 3, 2)
+
+    # 4. 无记录 + FULL → FULL（用 id2 从无记录开始）
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id2, mode="FULL")
+    assert job(id2) == ("FULL", 1, 0)
+
+    # 5. pending FULL + METADATA → FULL
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id2, mode="METADATA")
+    assert job(id2) == ("FULL", 2, 0)
+
+    # 6. pending METADATA + FULL → FULL
+    with factory() as session, session.begin():
+        session.scalar(select(IndexSyncRecord).where(IndexSyncRecord.entity_id == id2)).requested_mode = "METADATA"
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id2, mode="FULL")
+    assert job(id2) == ("FULL", 3, 0)
+
+    # 7. pending METADATA + METADATA → METADATA
+    with factory() as session, session.begin():
+        session.scalar(select(IndexSyncRecord).where(IndexSyncRecord.entity_id == id2)).requested_mode = "METADATA"
+    with factory() as session, session.begin():
+        enqueue_sync(session, "candidate", id2, mode="METADATA")
+    assert job(id2) == ("METADATA", 4, 0)
+
+
+@pytest.mark.asyncio
 async def test_sync_retains_all_current_document_evidence(setup):
     factory, cid, rid, index, _, service = setup
     with factory() as session, session.begin():

@@ -354,4 +354,36 @@ describe("ApiClient", () => {
     expect(received[1].url).toBe("http://127.0.0.1:43127/api/correction/apply");
     expect(await received[1].json()).toEqual({ entity_type: "candidate", entity_id: "candidate-1", field_name: "display_name", new_value: "张四", reason: "姓名纠正" });
   });
+
+  test("reads direction detail and posts re-evaluate and save for resumes and JDs", async () => {
+    const received: Request[] = [];
+    const detail = {
+      direction_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      effective_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      machine_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      manual_profile: null,
+      profile_version: "v1",
+      latest_active_correction_id: null,
+      has_manual_override: false
+    };
+    const fetcher: typeof fetch = async (input, init) => {
+      received.push(new Request(input, init));
+      return new Response(JSON.stringify(detail), { headers: { "Content-Type": "application/json" }, status: 200 });
+    };
+    const client = new ApiClient("http://127.0.0.1:43127", "launch-token", fetcher);
+
+    await client.getResumeDirectionProfile("rev-1");
+    await client.reevaluateResumeDirection("rev-1", "v1");
+    await client.getJdDirectionProfile("jd-rev-1");
+    await client.reevaluateJdDirection("jd-rev-1", "v2");
+
+    expect(received.map((r) => [r.method, new URL(r.url).pathname])).toEqual([
+      ["GET", "/api/resumes/revisions/rev-1/direction-profile"],
+      ["POST", "/api/resumes/revisions/rev-1/direction-profile/re-evaluate"],
+      ["GET", "/api/jd/revisions/jd-rev-1/direction-profile"],
+      ["POST", "/api/jd/revisions/jd-rev-1/direction-profile/re-evaluate"],
+    ]);
+    expect(await received[1].json()).toEqual({ expected_profile_version: "v1" });
+    expect(await received[3].json()).toEqual({ expected_profile_version: "v2" });
+  });
 });

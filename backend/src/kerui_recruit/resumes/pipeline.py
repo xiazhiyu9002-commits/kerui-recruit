@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pymupdf
@@ -10,7 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.base import new_id
-from kerui_recruit.db.models import Candidate, CandidateContact, ResumeRevision
+from kerui_recruit.db.models import Candidate, CandidateContact, ResumeDocument, ResumeImportClaim, ResumeRevision
+from kerui_recruit.duplicates.service import normalize_email, normalize_phone
+from kerui_recruit.direction.classifier import DirectionClassifier
+from kerui_recruit.direction.models import DirectionDecision, build_direction_diagnostics
 from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.providers.contracts import EmbeddingProvider, OCRProvider
 from kerui_recruit.providers.errors import ProviderError
@@ -19,12 +23,13 @@ from kerui_recruit.resumes.extract import (
     extract_contact,
     extract_text,
 )
+from kerui_recruit.resumes.identity import resolve_identity
 from kerui_recruit.resumes.normalize import normalize_resume
 from kerui_recruit.resumes.quality import (
     DOMINANT_FRAGMENT_RATIO,
     analyze_text,
 )
-from kerui_recruit.resumes.structured import NormalizedResume, ParsedResume, ResumeParser
+from kerui_recruit.resumes.structured import NormalizedResume, ParsedResume, ResumeParser, build_direction_input
 from kerui_recruit.resumes.validity import check_parsed_resume
 from kerui_recruit.search.contracts import SearchChunk, SearchIndex
 from kerui_recruit.storage.blobs import BlobStore
@@ -87,6 +92,7 @@ class ResumePipeline:
         search_index: SearchIndex | None = None,
         defer_indexing: bool = False,
         encryption_service: EncryptionService | None = None,
+        direction_classifier: DirectionClassifier | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.blob_store = blob_store
@@ -96,6 +102,7 @@ class ResumePipeline:
         self.search_index = search_index
         self.defer_indexing = defer_indexing
         self.encryption_service = encryption_service
+        self.direction_classifier = direction_classifier
 
     async def run(self, revision_id: str, *, force_ocr: bool = False) -> PipelineResult:
         with self.session_factory() as session:
@@ -137,11 +144,13 @@ class ResumePipeline:
             validity = check_parsed_resume(parsed, source_text)
             if not validity.ok:
                 raise PipelineFailure(validity.error_code or "E_STRUCTURED_EMPTY", validity.reason)
+            candidate_id = self._resolve_identity(revision_id, candidate_id, contact, parsed.name)
             normalized = normalize_resume(parsed)
             # Age is a derived display field rather than a ParsedResume field;
             # preserve explicit human values, including an intentional clear.
             if "age" in overrides:
                 normalized = normalized.model_copy(update={"age": overrides["age"]})
+            direction_decision, has_manual_direction = await self._classify_direction(revision_id, normalized)
             contents = self._build_chunk_contents(normalized)
             # The runtime delegates embedding to the durable index outbox. A
             # provider outage must not discard a successfully parsed revision.
@@ -174,6 +183,8 @@ class ResumePipeline:
                 contact,
                 source_text,
                 overrides,
+                direction_decision,
+                has_manual_direction,
             )
             if self.search_index is not None:
                 def update_search_projection() -> None:
@@ -300,6 +311,100 @@ class ResumePipeline:
                 f"第 {page_index + 1} 页 OCR 结果没有有效正文或仍以重复水印为主，请人工复核",
             )
 
+    async def _classify_direction(
+        self,
+        revision_id: str,
+        normalized: NormalizedResume,
+    ) -> tuple[DirectionDecision | None, bool]:
+        """方向分类：有人工覆盖时默认跳过 LLM，否则规则 + LLM 独立判断。"""
+        with self.session_factory() as session:
+            revision = session.get(ResumeRevision, revision_id)
+            manual = dict(revision.manual_overrides or {})
+        if manual.get("direction_profile"):
+            return None, True
+        if self.direction_classifier is None:
+            return None, False
+        try:
+            decision = await self.direction_classifier.classify(build_direction_input(normalized))
+            return decision, False
+        except Exception:
+            # 方向分类失败不阻断简历解析；缺失方向后续按 UNKNOWN 处理。
+            return None, False
+
+    def _resolve_identity(
+        self,
+        revision_id: str,
+        current_candidate_id: str,
+        contact,
+        name: str | None,
+    ) -> str:
+        """解析后按联系方式指纹识别已有候选人，命中则把新版本改挂到已有候选。
+
+        身份识别为尽力而为：任何异常都不阻断简历解析，退回原候选人。
+        """
+        try:
+            with self.session_factory() as session:
+                resolution = resolve_identity(
+                    session,
+                    phone=contact.phone,
+                    email=contact.email,
+                    name=name,
+                )
+                if resolution.action != "MATCHED" or resolution.candidate_id is None:
+                    return current_candidate_id
+                target_id = resolution.candidate_id
+                if target_id == current_candidate_id:
+                    return current_candidate_id
+
+                revision = session.get(ResumeRevision, revision_id)
+                if revision is None:
+                    return current_candidate_id
+
+                target_document = session.scalar(
+                    select(ResumeDocument)
+                    .where(ResumeDocument.candidate_id == target_id)
+                    .order_by(ResumeDocument.created_at)
+                    .limit(1)
+                )
+                if target_document is None:
+                    target_document = ResumeDocument(candidate_id=target_id)
+                    session.add(target_document)
+                    session.flush()
+
+                old_document_id = revision.document_id
+                revision.document_id = target_document.id
+                session.flush()
+
+                remaining = session.scalar(
+                    select(ResumeRevision.id)
+                    .where(ResumeRevision.document_id == old_document_id)
+                    .limit(1)
+                )
+                if remaining is None:
+                    old_document = session.get(ResumeDocument, old_document_id)
+                    if old_document is not None:
+                        session.delete(old_document)
+
+                duplicate = session.get(Candidate, current_candidate_id)
+                if duplicate is not None:
+                    duplicate.deleted_at = datetime.now(timezone.utc)
+
+                for claim in session.scalars(
+                    select(ResumeImportClaim).where(
+                        ResumeImportClaim.revision_id == revision_id
+                    )
+                ).all():
+                    claim.candidate_id = target_id
+
+                session.commit()
+                return target_id
+        except Exception:
+            logger.exception(
+                "identity resolution failed; keeping candidate %s",
+                current_candidate_id,
+            )
+            return current_candidate_id
+
     def _persist_ready(
         self,
         revision_id: str,
@@ -309,6 +414,8 @@ class ResumePipeline:
         contact,
         source_text: str,
         expected_overrides: dict,
+        direction_decision: DirectionDecision | None,
+        has_manual_direction: bool,
     ) -> None:
         with self.session_factory() as session, session.begin():
             revision = session.get(ResumeRevision, revision_id)
@@ -343,14 +450,26 @@ class ResumePipeline:
                         if contact.email else None
                     )
                     existing.email_confidence = 0.9 if contact.email else None
+                    existing.email_fingerprint = normalize_email(contact.email)
                 if "phone" not in manual_fields and existing.phone_confidence != 1.0:
                     existing.phone_encrypted = (
                         self.encryption_service.encrypt(contact.phone)
                         if contact.phone else None
                     )
                     existing.phone_confidence = 0.9 if contact.phone else None
+                    existing.phone_fingerprint = normalize_phone(contact.phone)
             revision.raw_text = source_text
-            revision.parsed_data = normalized.model_dump(mode="json")
+            parsed_data = normalized.model_dump(mode="json")
+            if has_manual_direction:
+                parsed_data["direction_profile"] = (revision.manual_overrides or {}).get("direction_profile")
+            elif direction_decision is not None:
+                parsed_data["direction_profile"] = direction_decision.effective_profile.model_dump(mode="json")
+            if direction_decision is not None:
+                review_data = dict(revision.review_data or {})
+                review_data["direction_profile"] = direction_decision.effective_profile.model_dump(mode="json")
+                review_data["direction_diagnostics"] = _direction_diagnostics(direction_decision)
+                revision.review_data = review_data
+            revision.parsed_data = parsed_data
             revision.parse_version = "resume-schema-v1"
             revision.status = "READY"
             revision.error_code = None
@@ -460,3 +579,7 @@ def _as_list(value: object) -> list[str]:
     if isinstance(value, (list, tuple)):
         return [str(v) for v in value if v]
     return [str(value)]
+
+
+def _direction_diagnostics(decision: DirectionDecision) -> dict:
+    return build_direction_diagnostics(decision)

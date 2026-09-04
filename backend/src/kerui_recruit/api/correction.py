@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.correction.service import CorrectionConflict
+from kerui_recruit.db.models import CorrectionLog
+from kerui_recruit.direction.service import DirectionConflict
 
 
 router = APIRouter(prefix="/api/correction", tags=["correction"])
@@ -53,7 +55,12 @@ def apply_correction(command: ApplyCorrectionRequest, request: Request) -> Corre
 def undo_correction(correction_id: str, request: Request) -> CorrectionResponse:
     services: AppServices = request.app.state.services
     try:
-        log = services.correction_service.undo_correction(correction_id)
+        with services.session_factory() as session:
+            existing = session.get(CorrectionLog, correction_id)
+        if existing is not None and existing.field_name == "direction_profile":
+            log = services.direction_service.undo_override(correction_id)
+        else:
+            log = services.correction_service.undo_correction(correction_id)
     except (ValueError, LookupError) as error:
         raise _api_error(error) from error
     return CorrectionResponse(
@@ -68,6 +75,8 @@ def undo_correction(correction_id: str, request: Request) -> CorrectionResponse:
 
 def _api_error(error: Exception) -> ApiError:
     if isinstance(error, CorrectionConflict):
+        return ApiError(409, error.code, str(error))
+    if isinstance(error, DirectionConflict):
         return ApiError(409, error.code, str(error))
     if isinstance(error, LookupError):
         return ApiError(404, "E_CORRECTION_NOT_FOUND", "更正记录或实体不存在")

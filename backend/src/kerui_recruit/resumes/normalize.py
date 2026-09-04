@@ -9,20 +9,7 @@ from kerui_recruit.resumes.structured import (
     NormalizedResume,
     ParsedResume,
 )
-
-
-_DEGREE_MAP = {
-    "博士": "DOCTORATE",
-    "phd": "DOCTORATE",
-    "硕士": "MASTER",
-    "master": "MASTER",
-    "本科": "BACHELOR",
-    "学士": "BACHELOR",
-    "bachelor": "BACHELOR",
-    "大专": "ASSOCIATE",
-    "专科": "ASSOCIATE",
-    "associate": "ASSOCIATE",
-}
+from kerui_recruit.search.degrees import normalize_degree
 
 
 def _clean(value: str | None) -> str | None:
@@ -66,7 +53,9 @@ def _compute_age(birth_year: int | None, graduation_year: int | None) -> int | N
 
 def normalize_resume(parsed: ParsedResume) -> NormalizedResume:
     degree = _clean(parsed.highest_degree)
-    normalized_degree = _DEGREE_MAP.get(degree.casefold(), degree.upper()) if degree else None
+    normalized_degree = normalize_degree(degree)
+    if degree and normalized_degree is None:
+        normalized_degree = degree.upper()
     years = (
         Decimal(str(parsed.total_years)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
         if parsed.total_years is not None

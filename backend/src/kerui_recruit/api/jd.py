@@ -209,6 +209,16 @@ _AI_CATEGORY_ALIASES = {
 }
 
 
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [s.strip() for s in value.split("、") if s.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(s).strip() for s in value if str(s).strip()]
+    return [str(value).strip()]
+
+
 class UpdateJdFieldRequest(BaseModel):
     field: str
     value: Any = None
@@ -255,6 +265,9 @@ def update_jd_field(
                 raise ApiError(422, "E_JD_AI_CATEGORY_INVALID", "AI 分类无效")
             revision.ai_category = value
             parsed["ai_category"] = value
+        elif field in ("tech_direction", "business_direction"):
+            value = _coerce_string_list(command.value)
+            parsed[field] = value
         else:
             raise ApiError(422, "E_JD_FIELD_UNSUPPORTED", "不支持的字段")
         revision.parsed_data = parsed

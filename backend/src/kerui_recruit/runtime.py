@@ -27,6 +27,9 @@ from kerui_recruit.correction.service import CorrectionService
 from kerui_recruit.dashboard.service import DashboardService
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.session import create_engine_for
+from kerui_recruit.direction.classifier import DirectionClassifier
+from kerui_recruit.direction.evaluation import DirectionEvaluationService
+from kerui_recruit.direction.service import DirectionService
 from kerui_recruit.diagnostics.service import DiagnosticsService
 from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.export.service import ExportService
@@ -34,12 +37,16 @@ from kerui_recruit.jd.pipeline import JdPipeline
 from kerui_recruit.main import create_app
 from kerui_recruit.mail.imap_provider import ImapLibProvider
 from kerui_recruit.mail.ingest import MailIngestService
+from kerui_recruit.mail.resume_gate import ResumeGate
 from kerui_recruit.mail.sender import MailSender
 from kerui_recruit.mail.service import MailService
 from kerui_recruit.mapping.service import MappingService
 from kerui_recruit.match.service import MatchService
 from kerui_recruit.migration.service import MigrationService
+from kerui_recruit.org.binding import OrgBindingService
+from kerui_recruit.org.import_parser import DeepSeekOrgImportParser
 from kerui_recruit.org.service import OrgService
+from kerui_recruit.duplicates.service import DuplicateReportService, MergePlanService
 from kerui_recruit.providers.factory import ProviderBundle, build_providers
 from kerui_recruit.providers.connectivity import ProviderConnectivityService
 from kerui_recruit.providers.leads import DeepSeekLeadExtractor
@@ -51,6 +58,7 @@ from kerui_recruit.providers.websearch import (
 )
 from kerui_recruit.reminders.mail_service import ReminderMailService
 from kerui_recruit.reminders.service import ReminderService
+from kerui_recruit.resumes.backfill import backfill_contact_fingerprints
 from kerui_recruit.resumes.pipeline import ResumePipeline
 from kerui_recruit.scheduler.service import SchedulerService
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
@@ -123,7 +131,9 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         search_service=search_service,
         jd_index=jd_index,
     )
-    jd_pipeline = JdPipeline(session_factory=factory, parser=providers.jd_parser)
+    direction_classifier = DirectionClassifier(providers.direction_llm)
+    jd_pipeline = JdPipeline(session_factory=factory, parser=providers.jd_parser,
+                              direction_classifier=direction_classifier)
 
     export_service = ExportService(session_factory=factory)
     correction_service = CorrectionService(session_factory=factory)
@@ -146,6 +156,11 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     org_service = OrgService(session_factory=factory)
     encryption_service = EncryptionService(
         key_path=str(settings.paths.config / "encryption.key"),
+    )
+    backfill_contact_fingerprints(factory, encryption_service)
+    org_binding_service = OrgBindingService(
+        session_factory=factory,
+        encryption=encryption_service,
     )
     if settings.tavily_api_key:
         web_search_provider = TavilyWebSearchProvider(
@@ -174,13 +189,35 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         encryption=encryption_service,
         extractor=lead_extractor,
     )
+    # 文本能力路由（与 factory.build_providers 保持一致）：text_* > deepseek_* > siliconflow_*。
+    if settings.text_api_key is not None:
+        text_key = settings.text_api_key
+        text_url = settings.text_base_url or settings.deepseek_base_url
+        text_model = settings.text_model or settings.deepseek_model
+    elif settings.deepseek_api_key is not None:
+        text_key = settings.deepseek_api_key
+        text_url = settings.deepseek_base_url
+        text_model = settings.deepseek_model
+    else:
+        text_key = settings.siliconflow_api_key
+        text_url = settings.siliconflow_base_url
+        text_model = settings.siliconflow_text_model
+
     llm_client = None
-    if settings.llm_enabled and providers.http_client is not None:
+    if text_key is not None and providers.http_client is not None:
         llm_client = OpenAICompatibleClient(
-            base_url=settings.deepseek_base_url,
-            api_key=settings.deepseek_api_key.get_secret_value(),
-            model=settings.deepseek_model,
+            base_url=text_url,
+            api_key=text_key.get_secret_value(),
+            model=text_model,
             http_client=providers.http_client,
+        )
+    org_import_parser = None
+    if text_key is not None and providers.http_client is not None:
+        org_import_parser = DeepSeekOrgImportParser(
+            api_key=text_key.get_secret_value(),
+            client=providers.http_client,
+            base_url=text_url,
+            model=text_model,
         )
     bd_agent = BdAgent(
         session_factory=factory,
@@ -224,6 +261,14 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
             to=settings.reminder_to,
         )
 
+    resume_gate = None
+    if text_key is not None:
+        resume_gate = ResumeGate(
+            base_url=text_url,
+            api_key=text_key.get_secret_value(),
+            model=text_model,
+        )
+
     scheduler_service = SchedulerService(
         session_factory=factory,
         match_service=match_service,
@@ -233,6 +278,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         backup_service=backup_service,
         soft_delete_service=soft_delete_service,
         sender_domains=settings.imap_whitelist_domains,
+        resume_gate=resume_gate,
     )
 
     settings_service = SettingsService(
@@ -242,6 +288,18 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
     migration_service = MigrationService(
         session_factory=factory,
         current_root=settings.paths.root,
+    )
+    duplicates_service = DuplicateReportService(
+        session_factory=factory,
+        encryption=encryption_service,
+        exports_dir=settings.paths.exports,
+    )
+    merge_plan_service = MergePlanService(session_factory=factory)
+    direction_service = DirectionService(session_factory=factory)
+    direction_evaluation_service = DirectionEvaluationService(
+        session_factory=factory,
+        classifier=direction_classifier,
+        direction_service=direction_service,
     )
 
     services = AppServices(
@@ -261,6 +319,8 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         mapping_service=mapping_service,
         reminder_service=reminder_service,
         org_service=org_service,
+        org_import_parser=org_import_parser,
+        org_binding_service=org_binding_service,
         bd_search_service=bd_search_service,
         bd_agent=bd_agent,
         encryption_service=encryption_service,
@@ -269,12 +329,16 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         scheduler_service=scheduler_service,
         settings_service=settings_service,
         migration_service=migration_service,
+        duplicates_service=duplicates_service,
+        merge_plan_service=merge_plan_service,
         provider_connectivity=ProviderConnectivityService(
             settings=settings,
             providers=providers,
             web_search=web_search_provider,
         ),
         index_sync_service=index_sync_service,
+        direction_service=direction_service,
+        direction_evaluation_service=direction_evaluation_service,
     )
     pipeline = ResumePipeline(
         session_factory=factory,
@@ -285,6 +349,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         search_index=None,
         defer_indexing=True,
         encryption_service=encryption_service,
+        direction_classifier=direction_classifier,
     )
 
     async def parse_resume(payload: dict[str, Any]) -> str:

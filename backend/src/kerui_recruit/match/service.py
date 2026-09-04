@@ -8,12 +8,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.models import Candidate, Jd, JdRevision, MatchResult, MatchRun, ResumeDocument, ResumeRevision
+from kerui_recruit.direction.compatibility import direction_compatibility
+from kerui_recruit.direction.models import parse_direction_profile
 from kerui_recruit.match.jd_index import JdSearchIndex
 from kerui_recruit.search.contracts import (
     CandidateFilters,
     SearchHit,
     SearchPage,
 )
+from kerui_recruit.search.degrees import normalize_degree
 from kerui_recruit.search.query import has_skill, normalize_skill
 from kerui_recruit.search.live import projection_is_current
 from kerui_recruit.search.service import HybridSearchService, _blocking
@@ -39,6 +42,13 @@ class MatchScore:
     total: float
     breakdown: dict[str, float]
     reason: str = ""
+    jd_primary_direction: str | None = None
+    candidate_primary_direction: str | None = None
+    candidate_direction_source: str | None = None
+    direction_status: str | None = None
+    direction_explanation: str = ""
+    matched_skills: tuple[str, ...] = ()
+    missing_skills: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,17 +109,22 @@ class MatchService:
         revision = await _blocking(self._revision, revision_id, deadline=deadline)
         query_text = _query_text(revision)
         filters = _hard_filter(revision, candidates)
+        pool_limit = min(max(limit * 5, 100), 300)
         page = await self.search_service.search(
             query_text,
             filters,
-            limit=limit,
+            limit=pool_limit,
             deadline=deadline - min(.25, max(0., deadline - time.monotonic()) * .1),
         )
         try:
             hits = await _blocking(self._eligible_hits, revision_id, page.items, deadline=deadline)
         except Exception:
             return SearchPage(items=(), empty_reason="service_error", degraded_reasons=(*page.degraded_reasons, "LIVE_VALIDATION_UNAVAILABLE"))
-        return replace(page, items=tuple(hits), empty_reason=page.empty_reason if hits else (page.empty_reason or "no_match"))
+        try:
+            scored = await _blocking(self._score_and_sort, revision, hits, limit, deadline=deadline)
+        except Exception:
+            scored = hits[:limit]
+        return replace(page, items=tuple(scored), empty_reason=page.empty_reason if scored else (page.empty_reason or "no_match"))
 
     def score(self, revision_id: str, hit: SearchHit) -> MatchScore:
         """Produce a transparent, sub-scored match result for one candidate.
@@ -118,41 +133,84 @@ class MatchService:
         (skill coverage + years). The raw RRF recall score is never added to
         0~1 sub-scores by nominal weight.
         """
-        return self._score_context(self._revision(revision_id), hit)
+        data = self._candidate_parsed_data([hit.candidate_id]).get(hit.candidate_id, {})
+        return self._score_context(self._revision(revision_id), hit, data)
 
-    def _score_context(self, revision: _JdContext, hit: SearchHit) -> MatchScore:
+    def _score_context(self, revision: _JdContext, hit: SearchHit, candidate_data: dict | None = None) -> MatchScore:
+        candidate_data = candidate_data or {}
         must_skills = _must_skills(revision)
-        matched = [skill for skill in must_skills if has_skill(hit.content, skill)]
+        matched, missing = _skill_coverage(candidate_data, must_skills)
         skill_score = (len(matched) / len(must_skills)) if must_skills else 0.0
         year_score = 1.0 if _meets_years(revision, hit) else 0.0
 
+        jd_profile = parse_direction_profile((revision.parsed_data or {}).get("direction_profile"))
+        cand_profile = parse_direction_profile(candidate_data.get("direction_profile"))
+        dir_score = direction_compatibility(jd_profile, cand_profile)
+
+        components = {
+            "relevance": hit.rerank_score if hit.rerank_score is not None else 0.0,
+            "skill_coverage": skill_score,
+            "direction_compatibility": dir_score,
+            "years": year_score,
+        }
         if hit.rerank_score is not None:
-            relevance = hit.rerank_score
-            total = round(relevance * 0.5 + skill_score * 0.4 + year_score * 0.1, 4)
+            weights = {"relevance": 0.35, "skill_coverage": 0.25, "direction_compatibility": 0.30, "years": 0.10}
             rerank_available = 1
         else:
-            # 降级：无模型相关性分数，业务分主导，不把默认值伪装成已验证相关性。
-            relevance = 0.0
-            total = round(skill_score * 0.8 + year_score * 0.2, 4)
+            weights = {"skill_coverage": 0.45, "direction_compatibility": 0.40, "years": 0.15}
             rerank_available = 0
+        if not must_skills:
+            weights.pop("skill_coverage", None)
+        if revision.min_years is None:
+            weights.pop("years", None)
+        total_weight = sum(weights.values())
+        total = round(sum(components[k] * w for k, w in weights.items()) / total_weight, 4) if total_weight else 0.0
+        breakdown = {k: round(components[k], 4) for k in weights}
+        breakdown["rerank_available"] = rerank_available
+        breakdown["jd_primary_direction"] = jd_profile.primary_role_code
+        breakdown["candidate_primary_direction"] = cand_profile.primary_role_code
+        breakdown["candidate_direction_source"] = cand_profile.dominant_source
+        breakdown["direction_status"] = cand_profile.status
+        breakdown["direction_explanation"] = _direction_explanation(jd_profile, cand_profile, dir_score)
+        breakdown["matched_skills"] = matched
+        breakdown["missing_skills"] = missing
 
         return MatchScore(
             candidate_id=hit.candidate_id,
             total=total,
-            breakdown={
-                "relevance": round(relevance, 4),
-                "skill_coverage": round(skill_score, 4),
-                "years": year_score,
-                "rerank_available": rerank_available,
-            },
+            breakdown=breakdown,
             reason=_build_reason(revision, hit, matched, must_skills, total, rerank_available),
+            jd_primary_direction=jd_profile.primary_role_code,
+            candidate_primary_direction=cand_profile.primary_role_code,
+            candidate_direction_source=cand_profile.dominant_source,
+            direction_status=cand_profile.status,
+            direction_explanation=_direction_explanation(jd_profile, cand_profile, dir_score),
+            matched_skills=tuple(matched),
+            missing_skills=tuple(missing),
         )
+
+    def _candidate_parsed_data(self, candidate_ids: list[str]) -> dict[str, dict]:
+        if not candidate_ids:
+            return {}
+        with self.session_factory() as session:
+            revisions = session.scalars(select(ResumeRevision).join(ResumeDocument).where(
+                ResumeDocument.candidate_id.in_(list(candidate_ids)),
+                ResumeRevision.is_current.is_(True),
+                ResumeRevision.status == "READY")).all()
+            return {rev.document.candidate_id: (rev.parsed_data or {}) for rev in revisions}
+
+    def _score_and_sort(self, revision: _JdContext, hits: list[SearchHit], limit: int) -> list[SearchHit]:
+        data_map = self._candidate_parsed_data([hit.candidate_id for hit in hits])
+        scored = [(hit, self._score_context(revision, hit, data_map.get(hit.candidate_id, {}))) for hit in hits]
+        scored.sort(key=lambda pair: -pair[1].total)
+        return [hit for hit, _ in scored[:limit]]
 
     def record_run(self, *, revision_id: str, hits) -> RecordedRun:
         """Persist an immutable match_run snapshot with sub-scored results."""
         result_ids: dict[str, str] = {}
+        hits = list(hits)
+        data_map = self._candidate_parsed_data([hit.candidate_id for hit in hits])
         with self.session_factory() as session:
-            hits = list(hits)
             self._assert_record_eligible(session, {revision_id}, hits)
             context = self._context(session.get(JdRevision, revision_id))
             run = MatchRun(
@@ -163,7 +221,7 @@ class MatchService:
             session.add(run)
             session.flush()
             for hit in hits:
-                score = self._score_context(context, hit)
+                score = self._score_context(context, hit, data_map.get(hit.candidate_id, {}))
                 result = MatchResult(
                     run=run,
                     candidate_id=hit.candidate_id,
@@ -261,6 +319,7 @@ class MatchService:
         current_candidate = self._candidate_representation(source.candidate_id)
         if current_candidate is None or current_candidate != candidate:
             return []
+        source_data = self._candidate_parsed_data([source.candidate_id]).get(source.candidate_id, {})
         with self.session_factory() as session:
             rows = session.execute(
                 select(JdRevision, Jd.company, Jd.title)
@@ -280,7 +339,7 @@ class MatchService:
                 filters = _hard_filter(context, None)
                 if filters.min_years is not None and (source.total_years is None or source.total_years < filters.min_years):
                     continue
-                if filters.degree_values() and _normalize_degree(source.highest_degree) not in filters.degree_values():
+                if filters.degree_values() and normalize_degree(source.highest_degree) not in filters.degree_values():
                     continue
                 if context.location and context.location not in {source.location, *preferred}:
                     continue
@@ -290,7 +349,7 @@ class MatchService:
                     continue
                 hit = replace(source, score=recalled.score, matched_channels=recalled.matched_channels,
                               rerank_score=recalled.rerank_score)
-                score = self._score_context(context, hit)
+                score = self._score_context(context, hit, source_data)
                 records.append(ReverseMatchRecord(revision.jd_id, revision.id, company, title, hit, score))
             return sorted(records, key=lambda record: (-record.score.total, -record.hit.score, record.jd_id))[:limit]
 
@@ -398,24 +457,6 @@ def _query_text(revision: _JdContext) -> str:
     )
 
 
-def _normalize_degree(value: str | None) -> str | None:
-    """Map a JD degree requirement to the canonical English form used by the resume index."""
-    if not value:
-        return None
-    cleaned = value.strip().casefold()
-    for suffix in ("及以上", "以上", "或以上"):
-        cleaned = cleaned.replace(suffix, "")
-    return _DEGREE_MAP.get(cleaned.strip())
-
-
-_DEGREE_MAP = {
-    "博士": "DOCTORATE", "phd": "DOCTORATE", "doctorate": "DOCTORATE",
-    "硕士": "MASTER", "master": "MASTER",
-    "本科": "BACHELOR", "学士": "BACHELOR", "bachelor": "BACHELOR",
-    "大专": "ASSOCIATE", "专科": "ASSOCIATE", "associate": "ASSOCIATE",
-}
-
-
 def _hard_filter(
     revision: _JdContext,
     provided: CandidateFilters | None,
@@ -425,7 +466,7 @@ def _hard_filter(
     if revision.min_years is not None:
         base = replace(base, min_years=revision.min_years)
     if revision.highest_degree:
-        base = replace(base, highest_degree=_normalize_degree(revision.highest_degree))
+        base = replace(base, highest_degree=normalize_degree(revision.highest_degree))
     if revision.location:
         base = replace(base, location=revision.location)
     return base
@@ -433,8 +474,7 @@ def _hard_filter(
 
 def _must_skills(revision: _JdContext) -> list[str]:
     parsed = revision.parsed_data or {}
-    skills = [normalize_skill(s) for s in parsed.get("tech_direction", [])]
-    skills.extend(normalize_skill(s) for s in parsed.get("required_skills", []))
+    skills = [normalize_skill(s) for s in parsed.get("required_skills", [])]
     for req in parsed.get("requirements", []):
         if req.get("kind") == "MUST" and req.get("label") in ("技能", "skill"):
             skills.append(normalize_skill(req["value"]))
@@ -449,10 +489,47 @@ def _must_skills(revision: _JdContext) -> list[str]:
     return result
 
 
+def _skill_text(candidate_data: dict) -> str:
+    parts: list[str] = []
+    for key in ("skills", "tech_direction", "business_direction"):
+        value = candidate_data.get(key) or []
+        if isinstance(value, str):
+            parts.append(value)
+        else:
+            parts.extend(str(v) for v in value if v)
+    for exp in candidate_data.get("experiences") or []:
+        if isinstance(exp, dict):
+            parts.append(str(exp.get("title") or ""))
+            parts.append(str(exp.get("summary") or ""))
+    for proj in candidate_data.get("projects") or []:
+        if isinstance(proj, dict):
+            parts.append(str(proj.get("tech_stack") or ""))
+            parts.append(str(proj.get("summary") or ""))
+    return " ".join(p for p in parts if p)
+
+
+def _skill_coverage(candidate_data: dict, must_skills: list[str]) -> tuple[list[str], list[str]]:
+    if not must_skills:
+        return [], []
+    text = _skill_text(candidate_data)
+    matched = [skill for skill in must_skills if has_skill(text, skill)]
+    return matched, [skill for skill in must_skills if skill not in matched]
+
+
 def _meets_years(revision: _JdContext, hit: SearchHit) -> bool:
     if revision.min_years is None:
         return True
     return (hit.total_years or 0) >= revision.min_years
+
+
+def _direction_explanation(jd_profile, cand_profile, dir_score: float) -> str:
+    jp = jd_profile.primary_role_code
+    cp = cand_profile.primary_role_code
+    if jp is None or cp is None:
+        return "方向未知"
+    if jp == cp:
+        return f"方向一致（{jp}）"
+    return f"JD {jp} vs 候选人 {cp}，兼容 {dir_score}"
 
 
 def _build_reason(

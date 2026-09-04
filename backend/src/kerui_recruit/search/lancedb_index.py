@@ -29,7 +29,7 @@ class LanceDBSearchIndex:
     optimize_every = 20
 
     def __init__(self, root: Path, *, vector_dimension: int,
-                 embedding_model: str = "unspecified", schema_version: str = "2",
+                 embedding_model: str = "unspecified", schema_version: str = "3",
                  chunk_version: str = "1") -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
@@ -54,6 +54,7 @@ class LanceDBSearchIndex:
             return "Index incompatible: schema, model, dimension or chunk version changed; explicit rebuild required"
         schema = getattr(self.database.open_table(self.table_name), "schema", None)
         if schema is not None and ("preferred_locations" not in schema.names or
+                                   "primary_role_family" not in schema.names or
                                    schema.field("vector").type.list_size != self.vector_dimension):
             return "Index incompatible: physical schema differs; explicit rebuild required"
         return None
@@ -299,6 +300,7 @@ class LanceDBSearchIndex:
             location=row.get("location"),
             qs_rank=row.get("qs_rank"),
             verified_exclusions=tuple(row.get("_verified_exclusions", ())),
+            **_direction_kwargs(row),
         )
 
     def _rrf(
@@ -338,6 +340,7 @@ class LanceDBSearchIndex:
                     location=row.get("location"),
                     qs_rank=row.get("qs_rank"),
                     verified_exclusions=tuple(row.get("_verified_exclusions", ())),
+                    **_direction_kwargs(row),
                 )
             )
             if len(hits) >= limit:
@@ -364,6 +367,14 @@ class LanceDBSearchIndex:
             "preferred_location": chunk.preferred_location,
             "preferred_locations": list(dict.fromkeys((
                 *((chunk.preferred_location,) if chunk.preferred_location else ()), *chunk.preferred_locations))),
+            "primary_role_family": chunk.primary_role_family,
+            "role_family_codes": list(chunk.role_family_codes),
+            "direction_confidence": chunk.direction_confidence,
+            "direction_status": chunk.direction_status,
+            "direction_source": chunk.direction_source,
+            "business_domain_codes": list(chunk.business_domain_codes),
+            "leadership_code": chunk.leadership_code,
+            "taxonomy_version": chunk.taxonomy_version,
         }
 
     def _table_exists(self) -> bool:
@@ -389,6 +400,14 @@ class LanceDBSearchIndex:
                 pa.field("school_level", pa.string()),
                 pa.field("preferred_location", pa.string()),
                 pa.field("preferred_locations", pa.list_(pa.string())),
+                pa.field("primary_role_family", pa.string()),
+                pa.field("role_family_codes", pa.list_(pa.string())),
+                pa.field("direction_confidence", pa.float64()),
+                pa.field("direction_status", pa.string()),
+                pa.field("direction_source", pa.string()),
+                pa.field("business_domain_codes", pa.list_(pa.string())),
+                pa.field("leadership_code", pa.string()),
+                pa.field("taxonomy_version", pa.string()),
             ]
         )
 
@@ -421,8 +440,56 @@ class LanceDBSearchIndex:
         if school_values:
             quoted = ", ".join(cls._quote(s) for s in school_values)
             clauses.append(f"school_level IN ({quoted})")
+        if filters.primary_role_family:
+            clauses.append(f"primary_role_family = {cls._quote(filters.primary_role_family)}")
+        if filters.role_family_codes:
+            quoted = ", ".join(cls._quote(code) for code in filters.role_family_codes)
+            clauses.append(f"array_has_any(role_family_codes, [{quoted}])")
+        if filters.business_domain_codes:
+            quoted = ", ".join(cls._quote(code) for code in filters.business_domain_codes)
+            clauses.append(f"array_has_any(business_domain_codes, [{quoted}])")
         return " AND ".join(clauses)
+
+    def update_candidate_direction(self, candidate_id: str, **fields: Any) -> bool:
+        """METADATA 同步：只更新方向字段，保留 vector/content/chunk_id。
+
+        返回是否至少更新了一条索引行。索引中不存在该 candidate 时返回 False，
+        调用方据此将请求升级为 FULL 而非假成功。
+        """
+        allowed = {"primary_role_family", "role_family_codes", "direction_confidence",
+                   "direction_status", "direction_source", "business_domain_codes",
+                   "leadership_code", "taxonomy_version"}
+        if not fields.keys() <= allowed:
+            raise ValueError("Unsupported direction projection fields")
+        for key in ("role_family_codes", "business_domain_codes"):
+            if key in fields:
+                value = fields[key]
+                # LanceDB update 不接受空列表；空列表转为 null。
+                fields[key] = None if value is None or len(value) == 0 else list(value)
+        with self._write_lock:
+            self._require_compatible()
+            if not self._table_exists() or not fields:
+                return False
+            table = self.database.open_table(self.table_name)
+            if table.count_rows(f"candidate_id = {self._quote(candidate_id)}") == 0:
+                return False
+            table.update(
+                where=f"candidate_id = {self._quote(candidate_id)}", values=fields)
+            return True
 
     @staticmethod
     def _quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
+
+
+def _direction_kwargs(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "primary_role_family": row.get("primary_role_family"),
+        "role_family_codes": tuple(row.get("role_family_codes") or ()),
+        "direction_confidence": row.get("direction_confidence"),
+        "direction_status": row.get("direction_status"),
+        "direction_source": row.get("direction_source"),
+        "business_domain_codes": tuple(row.get("business_domain_codes") or ()),
+        "leadership_code": row.get("leadership_code"),
+        "taxonomy_version": row.get("taxonomy_version"),
+    }

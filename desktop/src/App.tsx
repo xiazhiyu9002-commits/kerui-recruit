@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import "./styles.css";
 import "./cases/workflow.css";
@@ -6,8 +7,35 @@ import { OrgMindMap } from "./org/OrgMindMap";
 import { OrgDetailPanel } from "./org/OrgDetailPanel";
 import { CaseDrawer } from "./cases/CaseDrawer";
 import { ResumeReviewDrawer } from "./resumes/ResumeReviewDrawer";
+import { DirectionEditor } from "./resumes/DirectionEditor";
 import { IndexSyncPanel } from "./search/IndexSyncPanel";
 import { RemindersPanel } from "./cases/RemindersPanel";
+import { LoadingButton, LongTaskProgress } from "./components/Loading";
+import type {
+  DirectionEvaluationResponse,
+  DirectionProfile,
+  DirectionProfileDetailResponse,
+  DirectionProfileResponse,
+  DirectionTaxonomy,
+} from "./resumes/direction-types";
+
+
+async function openExternal(url: string) {
+  try {
+    await invoke("open_external", { url });
+  } catch (error) {
+    // 非 http/https 或系统浏览器打开失败时，静默回退为提示。
+    console.warn("打开链接失败", error);
+  }
+}
+
+async function copyLink(url: string) {
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch (error) {
+    console.warn("复制链接失败", error);
+  }
+}
 
 
 function exportSvgAsPng(svg: SVGSVGElement, filename: string) {
@@ -53,11 +81,15 @@ function exportSvgAsPng(svg: SVGSVGElement, filename: string) {
 
 
 export interface ImportedResume {
-  candidate_id: string;
-  document_id: string;
-  revision_id: string;
-  blob_id: string;
-  task_id: string;
+  action: string;
+  candidate_id: string | null;
+  document_id: string | null;
+  revision_id: string | null;
+  blob_id: string | null;
+  task_id: string | null;
+  message?: string;
+  conflict_candidate_ids?: string[];
+  created_task?: boolean;
 }
 
 export interface TaskStatus {
@@ -85,12 +117,21 @@ export interface CandidateSearchItem {
   location: string | null;
   result_id?: string | null;
   original_filename?: string | null;
+  jd_primary_direction?: string | null;
+  candidate_primary_direction?: string | null;
+  candidate_direction_source?: string | null;
+  direction_status?: string | null;
+  direction_compatibility?: number | null;
+  direction_explanation?: string | null;
+  matched_skills?: string[];
+  missing_skills?: string[];
 }
 
 export interface CandidateSearchResult {
   items: CandidateSearchItem[];
   degraded_reasons: string[];
   empty_reason?: string | null;
+  status?: string | null;
 }
 
 export interface CandidateSearchFilters {
@@ -98,6 +139,19 @@ export interface CandidateSearchFilters {
   degree_exact?: boolean; locations?: string[]; preferred_locations?: string[];
   candidate_status?: string; max_qs_rank?: number; school_level?: string;
   exclude_skills?: string[];
+  primary_role_family?: string;
+  role_families?: string[];
+  business_domains?: string[];
+}
+
+export interface SearchDirectionOption {
+  code: string;
+  label: string;
+}
+
+export interface SearchDirectionTaxonomy {
+  role_families: SearchDirectionOption[];
+  business_domains: SearchDirectionOption[];
 }
 
 export interface CandidateListItem {
@@ -172,6 +226,7 @@ export interface ParsedResumeData {
   summary?: string;
   experiences?: ParsedExperienceData[];
   projects?: ParsedProjectData[];
+  direction_profile?: DirectionProfile;
 }
 
 export interface IndexSyncStatus {
@@ -235,8 +290,11 @@ export interface JdListItem {
 }
 
 export interface MatchRun {
-  run_id: string;
+  run_id: string | null;
   items: CandidateSearchItem[];
+  status?: string;
+  empty_reason?: string | null;
+  degraded_reasons?: string[];
 }
 
 export interface BatchMatchResult {
@@ -256,6 +314,14 @@ export interface MatchResultItem {
   total_years: number | null;
   highest_degree: string | null;
   location: string | null;
+  direction_compatibility: number | null;
+  jd_primary_direction: string | null;
+  candidate_primary_direction: string | null;
+  candidate_direction_source: string | null;
+  direction_status: string | null;
+  direction_explanation: string | null;
+  matched_skills: string[];
+  missing_skills: string[];
 }
 
 export interface MatchResultGroup {
@@ -338,6 +404,9 @@ export interface OrgEmployee {
   id: string;
   company_id: string;
   department_id: string | null;
+  candidate_id: string | null;
+  candidate_name: string | null;
+  current_revision_id: string | null;
   name: string;
   title: string | null;
   job_level: string | null;
@@ -397,6 +466,52 @@ export interface OrgTreeNode {
   children: OrgTreeNode[];
 }
 
+export interface OrgImportEmployee {
+  name: string;
+  alias: string | null;
+  title: string | null;
+  job_level: string | null;
+  report_to_name: string | null;
+  department_name: string | null;
+  subordinate_count: number | null;
+  team_size: number | null;
+  remark: string | null;
+}
+
+export interface OrgImportDepartment {
+  name: string;
+  parent_name: string | null;
+  leader_name: string | null;
+  team_size: number | null;
+  business_direction: string | null;
+}
+
+export interface OrgImportDraft {
+  company_name: string;
+  departments: OrgImportDepartment[];
+  employees: OrgImportEmployee[];
+}
+
+export interface OrgClarificationQuestion {
+  question: string;
+  field: string | null;
+  hint: string | null;
+}
+
+export interface OrgParseResult {
+  draft: OrgImportDraft | null;
+  questions: OrgClarificationQuestion[];
+}
+
+export interface BindEmployeeResult {
+  employee_id: string;
+  matched: boolean;
+  candidate_id: string | null;
+  candidate_name: string | null;
+  name_mismatch: boolean;
+  current_revision_id?: string | null;
+}
+
 export interface BdLead {
   id: string;
   source: string;
@@ -411,6 +526,13 @@ export interface BdEvidenceItem {
   claim: string | null;
   quote: string | null;
   source_url: string | null;
+}
+
+export interface BdPoolCandidate {
+  candidate_id: string;
+  name: string;
+  phone: string | null;
+  revision_id: string;
 }
 
 export interface BdAgentLead {
@@ -557,6 +679,16 @@ export interface CorrectionRecord {
   reverted: boolean;
 }
 
+export interface VendorPreset {
+  key: string;
+  label: string;
+  base_url: string;
+  text_model?: string;
+  vision_model?: string;
+  embedding_model?: string;
+  rerank_model?: string;
+}
+
 export interface AppSettings {
   deepseek_api_key?: string;
   deepseek_base_url?: string;
@@ -568,10 +700,28 @@ export interface AppSettings {
   tavily_base_url?: string;
   serpapi_api_key?: string;
   serpapi_base_url?: string;
+  text_base_url?: string;
+  text_model?: string;
+  text_api_key?: string;
+  vision_base_url?: string;
+  vision_model?: string;
+  vision_api_key?: string;
+  embedding_base_url?: string;
+  embedding_model?: string;
+  embedding_api_key?: string;
+  rerank_base_url?: string;
+  rerank_model?: string;
+  rerank_api_key?: string;
   imap_host?: string;
   imap_account?: string;
   imap_auth_code?: string;
   imap_whitelist?: string;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_account?: string;
+  smtp_auth_code?: string;
+  smtp_ssl?: boolean;
+  reminder_to?: string;
 }
 
 export interface BackupSnapshot {
@@ -628,6 +778,7 @@ export interface RecruitmentApi {
   importFolder(directory: string): Promise<{ imported: ImportedResume[]; skipped: string[]; errors: string[] }>;
   getTask(taskId: string): Promise<TaskStatus>;
   listTasks(): Promise<TaskStatus[]>;
+  getTaskStatusBatch(taskIds: string[]): Promise<{ found: TaskStatus[]; missing_ids: string[] }>;
   controlTask(taskId: string, action: TaskAction): Promise<TaskStatus>;
   listResumeRevisions(candidateId: string): Promise<ResumeRevision[]>;
   switchResumeRevision(revisionId: string): Promise<ResumeRevision>;
@@ -670,6 +821,7 @@ export interface RecruitmentApi {
   runBdAgent(query: string, kind?: string, limit?: number): Promise<BdAgentQueryResult>;
   runBdAgentStream(query: string, kind?: string, limit?: number, onProgress?: (progress: BdProgress) => void): Promise<BdAgentQueryResult>;
   followUpBdAgent(sessionId: string, query: string, limit?: number): Promise<BdAgentQueryResult>;
+  lookupPool(leadId: string): Promise<BdPoolCandidate[]>;
   createCase(candidateId: string, jdId: string): Promise<CaseItem>;
   listCases(candidateId?: string, jdId?: string): Promise<CaseItem[]>;
   getCase(caseId: string): Promise<CaseDetail>;
@@ -696,8 +848,20 @@ export interface RecruitmentApi {
   undoCorrection(correctionId: string): Promise<CorrectionRecord>;
   exportMappingTree(snapshotId: string): Promise<void>;
   exportMappingTreePdf(snapshotId: string): Promise<void>;
+  getDirections(): Promise<SearchDirectionTaxonomy>;
   getSettings(): Promise<AppSettings>;
+  getVendors(): Promise<VendorPreset[]>;
   updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
+  testMail(): Promise<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } }>;
+  syncMail(): Promise<{ ingested: number; revision_ids: string[] }>;
+  mailStatus(): Promise<{ configured: boolean; last_uid: number }>;
+  getDirectionTaxonomy(): Promise<DirectionTaxonomy>;
+  getResumeDirectionProfile(revisionId: string): Promise<DirectionProfileDetailResponse>;
+  reevaluateResumeDirection(revisionId: string, expectedProfileVersion?: string): Promise<DirectionEvaluationResponse>;
+  saveResumeDirectionProfile(revisionId: string, directionProfile: DirectionProfile, expectedProfileVersion?: string, reason?: string): Promise<DirectionProfileResponse>;
+  getJdDirectionProfile(revisionId: string): Promise<DirectionProfileDetailResponse>;
+  reevaluateJdDirection(revisionId: string, expectedProfileVersion?: string): Promise<DirectionEvaluationResponse>;
+  saveJdDirectionProfile(revisionId: string, directionProfile: DirectionProfile, expectedProfileVersion?: string, reason?: string): Promise<DirectionProfileResponse>;
   exportMatchRun(runId: string): Promise<void>;
   listBackups(): Promise<BackupSnapshot[]>;
   createBackup(label?: string): Promise<{ filename: string; path: string }>;
@@ -727,15 +891,25 @@ export interface RecruitmentApi {
   updateEmployee(employeeId: string, changes: UpdateOrgEmployeeInput): Promise<OrgEmployee>;
   deleteEmployee(employeeId: string): Promise<void>;
   deleteCompany(companyId: string): Promise<void>;
+  parseOrgImport(text: string): Promise<OrgParseResult>;
+  parseOrgWord(file: File): Promise<OrgParseResult>;
+  answerOrgImport(text: string, answers: string[]): Promise<OrgParseResult>;
+  commitOrgImport(companyId: string, draft: OrgImportDraft, sourceText?: string | null): Promise<{ departments: number; employees: number }>;
+  reviseOrgImport(draft: OrgImportDraft, instruction: string): Promise<OrgImportDraft>;
+  getCompanySource(companyId: string): Promise<{ company_id: string; source_text: string | null }>;
+  bindEmployee(employeeId: string, phone: string, name?: string | null): Promise<BindEmployeeResult>;
 }
 
 
-const navigation = ["人才库", "JD 管理", "数据看板", "Mapping", "BD 助手", "设置", "招聘流程"];
-
-// 设置页中“回收站”及以下的高级功能默认隐藏；需要时改为 true 即可恢复。
-const SHOW_ADVANCED_SETTINGS = false;
+const navigation = ["人才库", "JD 管理", "数据看板", "Mapping", "BD 助手", "设置", "流程中"];
 
 const CANDIDATE_PAGE_SIZE = 20;
+
+function reviewActionLabel(revisionStatus: string | null | undefined, reviewError: string | null | undefined): string {
+  if (revisionStatus === "FAILED" || reviewError) return "解析异常·修正";
+  if (revisionStatus === "PENDING_REVIEW") return "待复核·确认入库";
+  return "解析与方向";
+}
 
 function pageWindow(current: number, totalPages: number): (number | "…")[] {
   if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -758,8 +932,6 @@ const JD_STATUS_OPTIONS: { value: JdStatus; label: string }[] = [
   { value: "FILLED", label: "招满" },
   { value: "CANCELLED", label: "已取消" },
 ];
-
-const AI_CATEGORY_OPTIONS = ["AI", "AI相关", "非AI"];
 
 const HEALTH_LABELS: Record<string, string> = {
   database: "数据库",
@@ -833,6 +1005,15 @@ function jdRequirementLabel(parsed: JdParsedData | null): string {
   return [tech ? `技术：${tech}` : "", biz ? `业务：${biz}` : ""].filter(Boolean).join("；") || "—";
 }
 
+function directionLabel(profile: DirectionProfile | null | undefined): string {
+  if (!profile) return "—";
+  const primary = profile.role_families.find((r) => r.is_primary);
+  if (!primary) return profile.status === "UNKNOWN" ? "未设置" : "—";
+  const source = primary.source === "USER" ? "人工" : primary.source === "RULE" ? "规则" : "AI";
+  if (source === "AI") return primary.label;
+  return `${primary.label}（${source}）`;
+}
+
 function qsBand(rank: number | null | undefined): string {
   if (rank == null) return "";
   if (rank <= 50) return "前50";
@@ -852,6 +1033,14 @@ function schoolLevelLabel(level: string | null | undefined): string {
     "海外": "海外",
   };
   return level ? (map[level] ?? level) : "";
+}
+
+function degreeLabel(degree: string | null | undefined): string {
+  const map: Record<string, string> = {
+    "博士": "博士", "硕士": "硕士", "本科": "本科", "大专": "大专",
+    "DOCTORATE": "博士", "MASTER": "硕士", "BACHELOR": "本科", "ASSOCIATE": "大专",
+  };
+  return degree ? (map[degree] ?? degree) : "";
 }
 
 function eduLabel(p: ParsedResumeData | null | undefined): string {
@@ -1096,13 +1285,17 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [candidatePage, setCandidatePage] = useState(1);
   const [candidateTotal, setCandidateTotal] = useState(0);
   const candidateTotalPages = Math.max(1, Math.ceil(candidateTotal / CANDIDATE_PAGE_SIZE));
+  const candidateListRef = useRef<HTMLDivElement | null>(null);
   const [searchFilterDraft, setSearchFilterDraft] = useState({
     minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "",
-    schoolLevel: "", maxQsRank: "", excludeSkills: "",
+    schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "",
   });
+  const [directions, setDirections] = useState<SearchDirectionTaxonomy | null>(null);
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
   const [folderPath, setFolderPath] = useState("");
-  const [batchProgress, setBatchProgress] = useState<{ total: number; done: number } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ total: number; waiting: number; running: number; done: number; failed: number; percent: number } | null>(null);
+  const [batchTaskIds, setBatchTaskIds] = useState<string[]>([]);
+  const [batchTimedOut, setBatchTimedOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -1114,7 +1307,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [jdResult, setJdResult] = useState<ImportedJd[]>([]);
   const [jds, setJds] = useState<JdListItem[]>([]);
   const [openJdSource, setOpenJdSource] = useState<Record<string, boolean>>({});
-  const [jdFilter, setJdFilter] = useState({ title: "", company: "", status: "", ai: "" });
+  const [jdFilter, setJdFilter] = useState({ title: "", company: "", status: "" });
+  const [jdDirectionRevisionId, setJdDirectionRevisionId] = useState<string | null>(null);
+  const [candidateDirectionRevisionId, setCandidateDirectionRevisionId] = useState<string | null>(null);
 
   // 匹配结果抽屉
   const [matchDrawer, setMatchDrawer] = useState<MatchDrawerState | null>(null);
@@ -1143,6 +1338,15 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const [orgImportText, setOrgImportText] = useState("");
+  const [orgImportFileName, setOrgImportFileName] = useState("");
+  const [orgImportDraft, setOrgImportDraft] = useState<OrgImportDraft | null>(null);
+  const [orgImportQuestions, setOrgImportQuestions] = useState<OrgClarificationQuestion[]>([]);
+  const [orgImportAnswers, setOrgImportAnswers] = useState<string[]>([]);
+  const [orgImportBusy, setOrgImportBusy] = useState(false);
+  const [orgImportMessage, setOrgImportMessage] = useState("");
+  const [orgReviseInstruction, setOrgReviseInstruction] = useState("");
+  const [orgSource, setOrgSource] = useState<{ companyId: string; text: string | null } | null>(null);
   const undoStackRef = useRef<{ undo: () => Promise<void>; redo: () => Promise<void> }[]>([]);
   const redoStackRef = useRef<{ undo: () => Promise<void>; redo: () => Promise<void> }[]>([]);
 
@@ -1153,6 +1357,9 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [bdLeads, setBdLeads] = useState<BdAgentLead[]>([]);
   const [bdLoading, setBdLoading] = useState(false);
   const [bdProgress, setBdProgress] = useState<BdProgress | null>(null);
+  const [bdPoolByLead, setBdPoolByLead] = useState<Record<string, BdPoolCandidate[]>>({});
+  const [bdPoolBusyId, setBdPoolBusyId] = useState<string | null>(null);
+  const [collapsedPool, setCollapsedPool] = useState<Record<string, boolean>>({});
 
   // 看板
   const [dashboard, setDashboard] = useState<DashboardOverview | null>(null);
@@ -1177,8 +1384,13 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   // 设置
   const [settings, setSettings] = useState<AppSettings>({});
+  const [vendors, setVendors] = useState<VendorPreset[]>([]);
   const [providerChecks, setProviderChecks] = useState<ProviderCheck[]>([]);
   const [settingsMessage, setSettingsMessage] = useState("");
+  const [mailTestResult, setMailTestResult] = useState<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } } | null>(null);
+  const [mailSyncMessage, setMailSyncMessage] = useState("");
+  const [mailStatus, setMailStatus] = useState<{ configured: boolean; last_uid: number } | null>(null);
+  const [mailWhitelistInput, setMailWhitelistInput] = useState("");
   const [dataRootInput, setDataRootInput] = useState("");
   const [dataRootMessage, setDataRootMessage] = useState("");
 
@@ -1189,10 +1401,14 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [portableRestoreTarget, setPortableRestoreTarget] = useState("");
   const [portablePassphrase, setPortablePassphrase] = useState("");
   const [portableMessage, setPortableMessage] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [portableBusy, setPortableBusy] = useState(false);
 
   // 数据迁移
   const [migrationTarget, setMigrationTarget] = useState("");
   const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState("");
 
   // 启动检查
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
@@ -1213,6 +1429,8 @@ export function App({ api }: { api: RecruitmentApi }) {
       if (searchFilterDraft.schoolLevel.trim()) filters.school_level = searchFilterDraft.schoolLevel.trim();
       if (searchFilterDraft.maxQsRank !== "") filters.max_qs_rank = Number(searchFilterDraft.maxQsRank);
       if (searchFilterDraft.excludeSkills.trim()) filters.exclude_skills = splitList(searchFilterDraft.excludeSkills);
+      if (searchFilterDraft.direction) filters.primary_role_family = searchFilterDraft.direction;
+      if (searchFilterDraft.businessDomains.trim()) filters.business_domains = splitList(searchFilterDraft.businessDomains);
       const response = await api.searchCandidates(query.trim(), filters);
       setResults(response.items);
       if (response.empty_reason === "index_not_ready") {
@@ -1273,9 +1491,25 @@ export function App({ api }: { api: RecruitmentApi }) {
         setCandidatePage(1);
         setCandidateTotal(items.length);
       }
+      candidateListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "候选人列表加载失败");
     }
+  }
+
+  function scrollToCandidateListTop() {
+    candidateListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function closeSearchResults() {
+    setResults([]);
+  }
+
+  function resetSearchAndGoHome() {
+    setQuery("");
+    setResults([]);
+    setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "" });
+    void loadCandidates(1);
   }
 
   async function updateCandidateFieldValue(candidateId: string, field: string, value: unknown) {
@@ -1473,11 +1707,11 @@ export function App({ api }: { api: RecruitmentApi }) {
     catch (caught) { setError(caught instanceof Error ? caught.message : "加载复核资料失败"); }
   }
 
-  function renderCandidateTable(rows: { key: string; candidateId: string; name: string; phone: string | null; revisionId: string; filename: string; parsed: ParsedResumeData | null }[]) {
+  function renderCandidateTable(rows: { key: string; candidateId: string; name: string; phone: string | null; revisionId: string; filename: string; parsed: ParsedResumeData | null; revisionStatus?: string | null; reviewError?: string | null }[]) {
     return (
-      <table>
+      <table className="candidate-table">
         <thead>
-          <tr><th>姓名</th><th>学历</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>操作</th></tr>
+          <tr><th>姓名</th><th>学历</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>主方向</th><th className="candidate-actions-col">操作</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => {
@@ -1491,21 +1725,28 @@ export function App({ api }: { api: RecruitmentApi }) {
               <Fragment key={r.key}>
                 <tr>
                   <td><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></td>
-                  <td>{eduLabel(p) || "—"}</td>
+                  <td><EditableCell value={degreeLabel(p?.highest_degree) || "—"} onSave={(next) => updateCandidateFieldValue(r.candidateId, "highest_degree", next.trim() || null)} /></td>
                   <td><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></td>
                   <td>{industry}</td>
                   <td><EditableCell value={techValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "tech_direction", splitList(next))} /></td>
                   <td><EditableCell value={bizValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "business_direction", splitList(next))} /></td>
-                  <td>
-                    <button className="detail-button" onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
-                    <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
-                    <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
-                    <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
-                    <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>复核详情</button>
+                  <td>{directionLabel(p?.direction_profile)}</td>
+                  <td className="candidate-actions-col">
+                    <div className="row-actions">
+                      <span className="row-actions__group">
+                        <button className="detail-button" onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
+                        <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
+                        <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
+                      </span>
+                      <span className="row-actions__group row-actions__group--right">
+                        <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
+                        <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{reviewActionLabel(r.revisionStatus, r.reviewError)}</button>
+                      </span>
+                    </div>
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     {p?.experiences && p.experiences.length > 0 && (
                       <div className="candidate-line">
                         <small>工作履历</small>
@@ -1546,7 +1787,7 @@ export function App({ api }: { api: RecruitmentApi }) {
             <div key={r.key} className="virtual-row">
               <div className="virtual-row-main">
                 <div className="v-col v-name"><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></div>
-                <div className="v-col v-edu">{eduLabel(p) || "—"}</div>
+                <div className="v-col v-edu"><EditableCell value={degreeLabel(p?.highest_degree) || "—"} onSave={(next) => updateCandidateFieldValue(r.candidateId, "highest_degree", next.trim() || null)} /></div>
                 <div className="v-col v-phone"><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></div>
                 <div className="v-col v-recent">{recentIndustry}</div>
                 <div className="v-col v-longest">{longestIndustry}</div>
@@ -1559,9 +1800,10 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="virtual-row-sub">
                 <div className="v-col v-tech"><EditableCell value={techValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "tech_direction", splitList(next))} /></div>
                 <div className="v-col v-biz"><EditableCell value={bizValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "business_direction", splitList(next))} /></div>
+                <div className="v-col v-dir">主方向：{directionLabel(p?.direction_profile)}</div>
                 <div className="v-col v-actions">
                   <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
-                  <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{r.revisionStatus === "FAILED" || r.revisionStatus === "PENDING_REVIEW" ? "待复核" : r.reviewError ? "解析异常 · 复核" : "复核详情"}</button>
+                  <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{reviewActionLabel(r.revisionStatus, r.reviewError)}</button>
                 </div>
               </div>
               <div className="virtual-row-detail">
@@ -1658,9 +1900,16 @@ export function App({ api }: { api: RecruitmentApi }) {
     for (const item of selected) {
       try {
         const imported = await api.importResume(item);
-        const task = await api.getTask(imported.task_id);
-        setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
-        pollTask(imported.task_id);
+        if (imported.task_id) {
+          const task = await api.getTask(imported.task_id);
+          setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+          await loadCandidates(1);
+          pollTask(imported.task_id);
+        } else if (imported.action === "DUPLICATE_CONFLICT") {
+          setError(imported.message || "相同文件已关联到多个候选人，请人工处理");
+        } else {
+          setNotice(imported.message || "文件已导入过");
+        }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "导入失败，请检查文件");
       }
@@ -1673,9 +1922,8 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     try {
       const result = await api.importFolder(folderPath.trim());
-      const total = result.imported.length;
-      setBatchProgress({ total, done: 0 });
-      pollBatchTasks(result.imported.map((item) => item.task_id), total);
+      const taskIds = result.imported.filter((item) => item.task_id).map((item) => item.task_id as string);
+      pollBatchTasks(taskIds, taskIds.length);
       if (result.skipped.length > 0 || result.errors.length > 0) {
         setError(`已导入 ${result.imported.length} 个，跳过 ${result.skipped.length} 个，失败 ${result.errors.length} 个`);
       }
@@ -1685,25 +1933,70 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  const BATCH_CHUNK = 200;
+  const BATCH_POLL_MS = 1500;
+  const BATCH_TIMEOUT_MS = 300_000;
+  const BATCH_TERMINAL = ["SUCCESS", "FAILED", "DEAD_LETTER", "CANCELLED"];
+
+  function summarizeBatch(taskIds: string[], statusMap: Record<string, string>, total: number) {
+    let waiting = 0, running = 0, done = 0, failed = 0;
+    for (const id of taskIds) {
+      const status = statusMap[id];
+      if (status === "SUCCESS") done += 1;
+      else if (status === "FAILED" || status === "DEAD_LETTER" || status === "CANCELLED") failed += 1;
+      else if (status === "RUNNING" || status === "RETRY_WAIT") running += 1;
+      else waiting += 1;
+    }
+    const finished = done + failed;
+    return { total, waiting, running, done, failed, percent: total ? Math.round((finished / total) * 100) : 100 };
+  }
+
+  async function fetchBatchStatus(taskIds: string[]) {
+    const found: TaskStatus[] = [];
+    const missing: string[] = [];
+    for (let i = 0; i < taskIds.length; i += BATCH_CHUNK) {
+      const result = await api.getTaskStatusBatch(taskIds.slice(i, i + BATCH_CHUNK));
+      found.push(...result.found);
+      missing.push(...result.missing_ids);
+    }
+    return { found, missing };
+  }
+
   function pollBatchTasks(taskIds: string[], total: number) {
-    async function run() {
-      const deadline = Date.now() + 300_000;
-      while (Date.now() < deadline) {
-        try {
-          const tasks = await api.listTasks();
-          const done = tasks.filter((task) => taskIds.includes(task.id) && ["SUCCESS", "FAILED", "DEAD_LETTER"].includes(task.status)).length;
-          setBatchProgress({ total, done });
-          if (done >= total) {
-            await loadCandidates();
-            return;
-          }
-        } catch {
+    setBatchTaskIds(taskIds);
+    setBatchTimedOut(false);
+    void runBatchPolling(taskIds, total);
+  }
+
+  async function runBatchPolling(taskIds: string[], total: number) {
+    const deadline = Date.now() + BATCH_TIMEOUT_MS;
+    const statusMap: Record<string, string> = {};
+    while (Date.now() < deadline) {
+      try {
+        const { found } = await fetchBatchStatus(taskIds);
+        for (const task of found) statusMap[task.id] = task.status;
+        const summary = summarizeBatch(taskIds, statusMap, total);
+        setBatchProgress(summary);
+        if (summary.done + summary.failed >= total) {
+          setBatchTimedOut(false);
+          await loadCandidates();
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, 1500));
+      } catch {
+        setBatchTimedOut(true);
+        setBatchProgress(summarizeBatch(taskIds, statusMap, total));
+        return;
       }
+      await new Promise((resolve) => setTimeout(resolve, BATCH_POLL_MS));
     }
-    void run();
+    setBatchTimedOut(true);
+    setBatchProgress(summarizeBatch(taskIds, statusMap, total));
+  }
+
+  async function continueBatchPolling() {
+    if (batchTaskIds.length === 0 || !batchProgress) return;
+    setBatchTimedOut(false);
+    await runBatchPolling(batchTaskIds, batchProgress.total);
   }
 
   async function submitJd(event: FormEvent) {
@@ -2042,6 +2335,12 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function bindOrgEmployee(employeeId: string, phone: string, name: string): Promise<BindEmployeeResult> {
+    const result = await api.bindEmployee(employeeId, phone, name);
+    if (selectedCompanyId) await reloadOrgTree(selectedCompanyId);
+    return result;
+  }
+
   async function updateOrgDepartmentField(id: string, changes: UpdateOrgDepartmentInput) {
     setError(null);
     try {
@@ -2067,6 +2366,132 @@ export function App({ api }: { api: RecruitmentApi }) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "删除公司失败");
     }
+  }
+
+  function applyOrgParseResult(result: OrgParseResult) {
+    if (result.draft) setOrgImportDraft(result.draft);
+    const questions = result.questions ?? [];
+    setOrgImportQuestions(questions);
+    setOrgImportAnswers(questions.map(() => ""));
+    setOrgImportMessage(questions.length > 0 ? "解析有疑问，请回答下方问题后继续解析" : "解析完成，请核对下方结果后导入");
+  }
+
+  async function parseOrgImportText() {
+    if (!orgImportText.trim()) return;
+    setError(null);
+    setOrgImportMessage("");
+    setOrgImportBusy(true);
+    try {
+      applyOrgParseResult(await api.parseOrgImport(orgImportText.trim()));
+    } catch (caught) {
+      setOrgImportMessage(caught instanceof Error ? caught.message : "解析失败");
+    } finally {
+      setOrgImportBusy(false);
+    }
+  }
+
+  async function parseOrgImportFile(file: File) {
+    setError(null);
+    setOrgImportMessage("");
+    setOrgImportBusy(true);
+    try {
+      applyOrgParseResult(await api.parseOrgWord(file));
+      setOrgImportFileName(file.name);
+    } catch (caught) {
+      setOrgImportMessage(caught instanceof Error ? caught.message : "解析失败");
+    } finally {
+      setOrgImportBusy(false);
+    }
+  }
+
+  async function answerOrgImportDraft() {
+    if (!orgImportText.trim()) return;
+    setError(null);
+    setOrgImportMessage("");
+    setOrgImportBusy(true);
+    try {
+      const answers = orgImportAnswers.map((answer) => answer.trim()).filter(Boolean);
+      applyOrgParseResult(await api.answerOrgImport(orgImportText.trim(), answers));
+    } catch (caught) {
+      setOrgImportMessage(caught instanceof Error ? caught.message : "解析失败");
+    } finally {
+      setOrgImportBusy(false);
+    }
+  }
+
+  async function commitOrgImport() {
+    if (!orgImportDraft) return;
+    if (!selectedCompanyId) {
+      setOrgImportMessage("请先在左侧「公司」列表选择或新建目标公司，再导入");
+      return;
+    }
+    setError(null);
+    setOrgImportMessage("");
+    setOrgImportBusy(true);
+    try {
+      const result = await api.commitOrgImport(selectedCompanyId, orgImportDraft, orgImportText);
+      setOrgImportMessage(`已导入 ${result.departments} 个部门、${result.employees} 名人员`);
+      setOrgImportDraft(null);
+      setOrgImportText("");
+      setOrgImportFileName("");
+      await reloadOrgTree(selectedCompanyId);
+    } catch (caught) {
+      setOrgImportMessage(caught instanceof Error ? caught.message : "导入失败");
+    } finally {
+      setOrgImportBusy(false);
+    }
+  }
+
+  async function reviseOrgImportDraft() {
+    if (!orgImportDraft || !orgReviseInstruction.trim()) return;
+    setOrgImportBusy(true);
+    setOrgImportMessage("");
+    try {
+      const revised = await api.reviseOrgImport(orgImportDraft, orgReviseInstruction.trim());
+      setOrgImportDraft(revised);
+      setOrgReviseInstruction("");
+      setOrgImportMessage("已按指令修订，请核对后导入");
+    } catch (caught) {
+      setOrgImportMessage(caught instanceof Error ? caught.message : "修订失败");
+    } finally {
+      setOrgImportBusy(false);
+    }
+  }
+
+  async function toggleOrgSource(companyId: string) {
+    if (orgSource?.companyId === companyId) {
+      setOrgSource(null);
+      return;
+    }
+    setError(null);
+    try {
+      const result = await api.getCompanySource(companyId);
+      setOrgSource({ companyId, text: result.source_text });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "读取导入原文失败");
+    }
+  }
+
+  function updateOrgImportCompanyName(value: string) {
+    setOrgImportDraft((current) => (current ? { ...current, company_name: value } : current));
+  }
+
+  function updateOrgImportDepartment(index: number, field: string, value: string | number | null) {
+    setOrgImportDraft((current) => {
+      if (!current) return current;
+      const departments = [...current.departments];
+      departments[index] = { ...departments[index], [field]: value };
+      return { ...current, departments };
+    });
+  }
+
+  function updateOrgImportEmployee(index: number, field: string, value: string | number | null) {
+    setOrgImportDraft((current) => {
+      if (!current) return current;
+      const employees = [...current.employees];
+      employees[index] = { ...employees[index], [field]: value };
+      return { ...current, employees };
+    });
   }
 
   async function moveOrgNode(source: OrgTreeNode, target: OrgTreeNode) {
@@ -2182,6 +2607,24 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function lookupPool(leadId: string) {
+    setError(null);
+    setBdPoolBusyId(leadId);
+    setCollapsedPool((prev) => ({ ...prev, [leadId]: false }));
+    try {
+      const matches = await api.lookupPool(leadId);
+      setBdPoolByLead((prev) => ({ ...prev, [leadId]: matches }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "反查人才库失败");
+    } finally {
+      setBdPoolBusyId(null);
+    }
+  }
+
+  function togglePoolCollapse(leadId: string) {
+    setCollapsedPool((prev) => ({ ...prev, [leadId]: !prev[leadId] }));
+  }
+
   async function loadDashboard(filters = dashboardFilters, granularity = trendGranularity) {
     if (filters.date_from && filters.date_to && filters.date_from > filters.date_to) {
       setError("开始日期不能晚于结束日期");
@@ -2236,6 +2679,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     try {
       setSettings(await api.getSettings());
+      setVendors(await api.getVendors());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "设置加载失败");
     }
@@ -2261,6 +2705,50 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function testMailConfig() {
+    setError(null);
+    setMailTestResult(null);
+    try {
+      setMailTestResult(await api.testMail());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "邮箱连接测试失败");
+    }
+  }
+
+  async function syncMailNow() {
+    setError(null);
+    setMailSyncMessage("");
+    try {
+      const result = await api.syncMail();
+      setMailSyncMessage(`同步完成：新入库 ${result.ingested} 份简历`);
+      await loadMailStatus();
+    } catch (caught) {
+      setMailSyncMessage(caught instanceof Error ? caught.message : "邮箱同步失败");
+    }
+  }
+
+  async function loadMailStatus() {
+    try {
+      setMailStatus(await api.mailStatus());
+    } catch {
+      setMailStatus(null);
+    }
+  }
+
+  function addMailWhitelistTag() {
+    const tag = mailWhitelistInput.trim();
+    if (!tag) return;
+    const existing = (settings.imap_whitelist ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (!existing.includes(tag)) existing.push(tag);
+    setSettings({ ...settings, imap_whitelist: existing.join(",") });
+    setMailWhitelistInput("");
+  }
+
+  function removeMailWhitelistTag(tag: string) {
+    const existing = (settings.imap_whitelist ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    setSettings({ ...settings, imap_whitelist: existing.filter((s) => s !== tag).join(",") });
+  }
+
   async function saveDataRoot() {
     setError(null);
     setDataRootMessage("");
@@ -2274,50 +2762,69 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   async function loadBackups() {
     setError(null);
+    setBackupBusy(true);
     try {
       setBackups(await api.listBackups());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "备份列表加载失败");
+    } finally {
+      setBackupBusy(false);
     }
   }
 
   async function createBackup() {
     setError(null);
+    setBackupBusy(true);
     try {
       await api.createBackup();
       setBackups(await api.listBackups());
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "创建备份失败");
+    } finally {
+      setBackupBusy(false);
     }
   }
 
   async function restoreBackupItem(filename: string) {
+    const confirmed = window.confirm(
+      `确认恢复备份 "${filename}" 到当前数据目录？\n恢复将覆盖当前数据，且需要重启应用后生效。`
+    );
+    if (!confirmed) return;
     setError(null);
+    setBackupBusy(true);
     try {
-      const restored = await api.restoreBackup(filename);
+      await api.restoreBackup(filename);
       setBackups(await api.listBackups());
-      if (restored.restart_required) {
-        setPortableMessage("恢复已准备：请从托盘退出后重新启动。重启后会同步搜索索引，期间部分结果暂不可用。");
-      }
+      setPortableMessage("恢复已准备：请从托盘退出后重新启动。重启后会同步搜索索引，期间部分结果暂不可用。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "恢复失败");
+    } finally {
+      setBackupBusy(false);
     }
   }
 
   async function createPortableBackup() {
     if (!portableBackupPath.trim() || !portablePassphrase) return;
     setError(null);
+    setPortableBusy(true);
     try {
       const result = await api.createPortableBackup(portableBackupPath.trim(), portablePassphrase);
       setPortableMessage(`便携备份已创建：${result.path}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "便携备份创建失败");
+    } finally {
+      setPortableBusy(false);
     }
   }
 
   async function restorePortableBackup() {
     if (!portableRestorePath.trim() || !portableRestoreTarget.trim() || !portablePassphrase) return;
+    const confirmed = window.confirm(
+      `确认从 "${portableRestorePath.trim()}" 恢复到 "${portableRestoreTarget.trim()}"？\n目标目录将被替换；如需在当前应用使用该数据，请重启并切换数据目录。`
+    );
+    if (!confirmed) return;
     setError(null);
+    setPortableBusy(true);
     try {
       const result = await api.restorePortableBackup(
         portableRestorePath.trim(),
@@ -2325,10 +2832,12 @@ export function App({ api }: { api: RecruitmentApi }) {
         portablePassphrase
       );
       setPortableMessage(result.ok
-        ? `便携备份恢复并校验完成：${result.files_verified} 个文件`
+        ? `便携备份恢复并校验完成：${result.files_verified} 个文件。请重启应用并切换数据目录后使用。`
         : "便携备份恢复校验未通过");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "便携备份恢复失败");
+      setPortableMessage(caught instanceof Error ? caught.message : "便携备份恢复失败");
+    } finally {
+      setPortableBusy(false);
     }
   }
 
@@ -2336,10 +2845,16 @@ export function App({ api }: { api: RecruitmentApi }) {
     event.preventDefault();
     if (!migrationTarget.trim()) return;
     setError(null);
+    setMigrationMessage("");
+    setMigrationBusy(true);
     try {
       setMigrationReport(await api.migrateData(migrationTarget.trim()));
+      setMigrationMessage("迁移校验通过，请重启应用并切换到新数据目录后生效");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "数据迁移失败");
+      setMigrationReport(null);
+      setMigrationMessage(caught instanceof Error ? caught.message : "数据迁移失败");
+    } finally {
+      setMigrationBusy(false);
     }
   }
 
@@ -2384,6 +2899,11 @@ export function App({ api }: { api: RecruitmentApi }) {
   }, []);
 
   useEffect(() => {
+    api.getDirections().then(setDirections).catch(() => {});
+    api.getVendors().then(setVendors).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (activeNav === 0) void loadCandidates();
     if (activeNav === 1) void loadJds();
     if (activeNav === 2 || activeNav === 6) void loadJds();
@@ -2420,7 +2940,6 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (jdFilter.title && !(jd.title || "").toLowerCase().includes(jdFilter.title.trim().toLowerCase())) return false;
     if (jdFilter.company && !(jd.company || "").toLowerCase().includes(jdFilter.company.trim().toLowerCase())) return false;
     if (jdFilter.status && jd.jd_status !== jdFilter.status) return false;
-    if (jdFilter.ai && jdAiLabel(jd.ai_category) !== jdFilter.ai) return false;
     return true;
   });
 
@@ -2496,15 +3015,20 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <label>最低工作年限<input aria-label="最低工作年限" type="number" min="0" max="80" value={searchFilterDraft.minYears} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, minYears: e.target.value })} /></label>
                   <label>最高工作年限<input aria-label="最高工作年限" type="number" min="0" max="80" value={searchFilterDraft.maxYears} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, maxYears: e.target.value })} /></label>
                   <label>学历<select aria-label="最低学历" value={searchFilterDraft.degree} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, degree: e.target.value })}>
-                    <option value="">由查询语句决定</option><option value="COLLEGE">大专</option><option value="BACHELOR">本科</option><option value="MASTER">硕士</option><option value="DOCTOR">博士</option>
+                    <option value="">由查询语句决定</option><option value="ASSOCIATE">大专</option><option value="BACHELOR">本科</option><option value="MASTER">硕士</option><option value="DOCTORATE">博士</option>
                   </select></label>
                   <label>现居城市<input aria-label="现居城市" placeholder="上海、苏州" value={searchFilterDraft.locations} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, locations: e.target.value })} /></label>
                   <label>意向城市<input aria-label="意向城市" placeholder="北京、深圳" value={searchFilterDraft.preferredLocations} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, preferredLocations: e.target.value })} /></label>
                   <label>学校等级<input aria-label="学校等级" placeholder="985 / 211" value={searchFilterDraft.schoolLevel} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, schoolLevel: e.target.value })} /></label>
                   <label>QS最高排名<input aria-label="QS最高排名" type="number" min="1" value={searchFilterDraft.maxQsRank} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, maxQsRank: e.target.value })} /></label>
                   <label>排除技能<input aria-label="排除技能" placeholder="外包、PHP" value={searchFilterDraft.excludeSkills} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, excludeSkills: e.target.value })} /></label>
+                  <label>主方向<select aria-label="主方向" value={searchFilterDraft.direction} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, direction: e.target.value })}>
+                    <option value="">全部方向</option>
+                    {(directions?.role_families ?? []).map((rf) => <option key={rf.code} value={rf.code}>{rf.label}</option>)}
+                  </select></label>
+                  <label>业务领域<input aria-label="业务领域" placeholder="支付、金融/银行" value={searchFilterDraft.businessDomains} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, businessDomains: e.target.value })} /></label>
                 </div>
-                <button type="button" className="detail-button" onClick={() => setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "" })}>清除筛选</button>
+                <button type="button" className="detail-button" onClick={() => setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "" })}>清除筛选</button>
               </details>
               <form className="folder-import" onSubmit={(event) => void importFolderPath(event)}>
                 <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="导入文件夹路径，如 D:\简历库" aria-label="文件夹路径" />
@@ -2512,17 +3036,30 @@ export function App({ api }: { api: RecruitmentApi }) {
               </form>
               {batchProgress && (
                 <div className="batch-progress">
-                  <span>解析进度：{batchProgress.done}/{batchProgress.total}</span>
-                  <progress max={batchProgress.total || 1} value={batchProgress.done} />
+                  <span>
+                    解析进度：{batchProgress.percent}%（总数 {batchProgress.total} · 等待 {batchProgress.waiting} · 运行 {batchProgress.running} · 成功 {batchProgress.done} · 失败 {batchProgress.failed}）
+                  </span>
+                  <progress max={batchProgress.total || 1} value={batchProgress.done + batchProgress.failed} />
+                  {batchTimedOut && (
+                    <p role="status" className="muted">
+                      批次仍在后台运行。{batchTaskIds.length > 0 && (
+                        <button type="button" className="detail-button" onClick={() => void continueBatchPolling()}>继续刷新</button>
+                      )}
+                    </p>
+                  )}
                 </div>
               )}
             </section>
 
             <section className="content-grid">
-              <div className="results-card">
+              <div className="results-card" ref={candidateListRef}>
                 <div className="section-heading">
                   <h2>候选人</h2>
                   <button className="detail-button" onClick={() => void loadCandidates(1)}>显示候选人</button>
+                  {results.length > 0 && (
+                    <button className="detail-button" onClick={closeSearchResults}>关闭结果</button>
+                  )}
+                  <button className="detail-button" onClick={resetSearchAndGoHome}>清空搜索</button>
                   <span>{results.length} 条结果</span>
                 </div>
                 {results.length === 0 ? (
@@ -2550,6 +3087,10 @@ export function App({ api }: { api: RecruitmentApi }) {
                         )
                       )}
                       <button className="detail-button" disabled={candidatePage >= candidateTotalPages} onClick={() => void loadCandidates(candidatePage + 1)}>下一页</button>
+                    </div>
+                    <div className="pagination-actions">
+                      <button className="detail-button" onClick={scrollToCandidateListTop}>回到顶部</button>
+                      <button className="detail-button" onClick={resetSearchAndGoHome}>人才库首页</button>
                     </div>
                   </>
                 )}
@@ -2611,16 +3152,6 @@ export function App({ api }: { api: RecruitmentApi }) {
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
-                <select
-                  aria-label="筛选 AI 分类"
-                  value={jdFilter.ai}
-                  onChange={(event) => setJdFilter({ ...jdFilter, ai: event.target.value })}
-                >
-                  <option value="">全部 AI 分类</option>
-                  {AI_CATEGORY_OPTIONS.map((option) => (
-                    <option key={option} value={option}>{option}</option>
-                  ))}
-                </select>
               </div>
               {jds.length === 0 ? (
                 <p className="muted">暂无 JD，先在上方导入。</p>
@@ -2628,7 +3159,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <p className="muted">没有符合筛选条件的 JD。</p>
               ) : (
                 <table>
-                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>AI/非AI</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
+                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
                   <tbody>
                     {filteredJds.map((jd) => (
                       <Fragment key={jd.revision_id}>
@@ -2647,11 +3178,18 @@ export function App({ api }: { api: RecruitmentApi }) {
                               ))}
                             </select>
                           </td>
-                          <td><EditableCell value={jdAiLabel(jd.ai_category)} onSave={(next) => updateJdFieldValue(jd.jd_id, "ai_category", next.trim())} /></td>
-                          <td>{jdRequirementLabel(jd.parsed_data)}</td>
+                          <td>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              <span style={{ fontSize: 12, color: "#849087" }}>技术</span>
+                              <EditableCell value={jd.parsed_data?.tech_direction?.join("、") || ""} onSave={(next) => updateJdFieldValue(jd.jd_id, "tech_direction", splitList(next))} />
+                              <span style={{ fontSize: 12, color: "#849087" }}>业务</span>
+                              <EditableCell value={jd.parsed_data?.business_direction?.join("、") || ""} onSave={(next) => updateJdFieldValue(jd.jd_id, "business_direction", splitList(next))} />
+                            </div>
+                          </td>
                           <td>
                             <div className="case-actions">
                               <button className="detail-button" onClick={() => void runJdMatch(jd)}>匹配</button>
+                              <button className="detail-button" onClick={() => setJdDirectionRevisionId(jd.revision_id)}>编辑方向</button>
                               <button className="detail-button" onClick={() => toggleJdSource(jd.revision_id)}>
                                 {openJdSource[jd.revision_id] ? "收起原文" : "查看详情"}
                               </button>
@@ -2661,7 +3199,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                         </tr>
                         {openJdSource[jd.revision_id] && jd.source_text && (
                           <tr>
-                            <td colSpan={6}><pre className="jd-source-text">{jd.source_text}</pre></td>
+                            <td colSpan={5}><pre className="jd-source-text">{jd.source_text}</pre></td>
                           </tr>
                         )}
                       </Fragment>
@@ -2826,6 +3364,120 @@ export function App({ api }: { api: RecruitmentApi }) {
               )}
             </div>
 
+            <div className="case-section">
+              <div className="section-heading"><h3>导入组织</h3></div>
+              <div className="jd-form">
+                <textarea
+                  value={orgImportText}
+                  onChange={(e) => setOrgImportText(e.target.value)}
+                  placeholder="粘贴组织描述文本（如：公司名、部门、人员）"
+                  aria-label="组织文本"
+                  rows={3}
+                />
+                <div className="jd-row">
+                  <label className="import-button">
+                    上传文件导入
+                    <input
+                      type="file"
+                      accept=".txt,.docx"
+                      aria-label="导入组织文件"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) void parseOrgImportFile(f); }}
+                    />
+                  </label>
+                  {orgImportFileName && (
+                    <>
+                      <span className="muted">{orgImportFileName}</span>
+                      <button type="button" className="detail-button" onClick={() => setOrgImportFileName("")}>移除</button>
+                    </>
+                  )}
+                  <button type="button" className="import-button" disabled={orgImportBusy} onClick={() => void parseOrgImportText()}>
+                    {orgImportBusy ? "解析中…" : "解析粘贴文本"}
+                  </button>
+                  {orgImportDraft && (
+                    <button type="button" className="import-button" disabled={orgImportBusy} onClick={() => void commitOrgImport()}>
+                      确认导入
+                    </button>
+                  )}
+                </div>
+              </div>
+              {orgImportQuestions.length > 0 && (
+                <div className="case-section">
+                  <div className="section-heading"><h3>解析疑问</h3></div>
+                  {orgImportQuestions.map((q, i) => (
+                    <div key={i} className="jd-row" style={{ marginTop: 6 }}>
+                      <span className="muted">{q.question}{q.hint ? `（${q.hint}）` : ""}</span>
+                      <input
+                        value={orgImportAnswers[i] ?? ""}
+                        onChange={(e) => setOrgImportAnswers((current) => { const next = [...current]; next[i] = e.target.value; return next; })}
+                        placeholder="请回答"
+                        aria-label={`解析疑问${i}`}
+                      />
+                    </div>
+                  ))}
+                  <div className="jd-row" style={{ marginTop: 6 }}>
+                    <button type="button" className="import-button" disabled={orgImportBusy} onClick={() => void answerOrgImportDraft()}>
+                      {orgImportBusy ? "解析中…" : "提交回答并继续解析"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {orgImportDraft && (
+                <div className="case-section org-import-preview">
+                  <div className="section-heading">
+                    <h3>解析结果（可编辑后导入）</h3>
+                    <span className="muted">目标公司：{selectedCompanyId ? (companies.find((c) => c.id === selectedCompanyId)?.name ?? "已选择") : "未选择"}</span>
+                  </div>
+                  <div className="jd-form" style={{ margin: "0 0 12px" }}>
+                    <div className="jd-row">
+                      <input
+                        value={orgReviseInstruction}
+                        onChange={(e) => setOrgReviseInstruction(e.target.value)}
+                        placeholder="用一句话修正，如：把「叶程」改名为「贺喜」、合并 A 与 B 部门"
+                        aria-label="修正指令"
+                      />
+                      <button type="button" className="import-button" disabled={orgImportBusy || !orgReviseInstruction.trim()} onClick={() => void reviseOrgImportDraft()}>
+                        {orgImportBusy ? "修订中…" : "应用修正"}
+                      </button>
+                    </div>
+                  </div>
+                  <label className="org-field">
+                    <span className="org-field-label">公司名称</span>
+                    <input value={orgImportDraft.company_name} onChange={(e) => updateOrgImportCompanyName(e.target.value)} aria-label="导入公司名称" />
+                  </label>
+
+                  <h4>部门（{orgImportDraft.departments.length}）</h4>
+                  {orgImportDraft.departments.length === 0 ? (
+                    <p className="muted">未识别到部门</p>
+                  ) : (
+                    orgImportDraft.departments.map((dept, i) => (
+                      <div className="case-row" key={i}>
+                        <input value={dept.name} onChange={(e) => updateOrgImportDepartment(i, "name", e.target.value)} aria-label={`部门${i}名称`} />
+                        <input value={dept.parent_name ?? ""} onChange={(e) => updateOrgImportDepartment(i, "parent_name", e.target.value || null)} placeholder="上级部门" aria-label={`部门${i}上级`} />
+                        <input value={dept.leader_name ?? ""} onChange={(e) => updateOrgImportDepartment(i, "leader_name", e.target.value || null)} placeholder="负责人" aria-label={`部门${i}负责人`} />
+                        <input value={dept.team_size ?? ""} onChange={(e) => updateOrgImportDepartment(i, "team_size", e.target.value ? Number(e.target.value) : null)} placeholder="人数" type="number" aria-label={`部门${i}人数`} />
+                      </div>
+                    ))
+                  )}
+
+                  <h4>人员（{orgImportDraft.employees.length}）</h4>
+                  {orgImportDraft.employees.length === 0 ? (
+                    <p className="muted">未识别到人员</p>
+                  ) : (
+                    orgImportDraft.employees.map((emp, i) => (
+                      <div className="case-row" key={i}>
+                        <input value={emp.name} onChange={(e) => updateOrgImportEmployee(i, "name", e.target.value)} aria-label={`人员${i}姓名`} />
+                        <input value={emp.alias ?? ""} onChange={(e) => updateOrgImportEmployee(i, "alias", e.target.value || null)} placeholder="花名" aria-label={`人员${i}花名`} />
+                        <input value={emp.title ?? ""} onChange={(e) => updateOrgImportEmployee(i, "title", e.target.value || null)} placeholder="职位" aria-label={`人员${i}职位`} />
+                        <input value={emp.department_name ?? ""} onChange={(e) => updateOrgImportEmployee(i, "department_name", e.target.value || null)} placeholder="部门" aria-label={`人员${i}部门`} />
+                        <input value={emp.report_to_name ?? ""} onChange={(e) => updateOrgImportEmployee(i, "report_to_name", e.target.value || null)} placeholder="汇报给" aria-label={`人员${i}汇报人`} />
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+              {orgImportMessage && <p role="status" className="muted">{orgImportMessage}</p>}
+            </div>
+
             {companies.length === 0 ? (
               <div className="empty-state"><strong>还没有公司</strong><p>先在上方新建一家公司，再录入部门与人员。</p></div>
             ) : (
@@ -2846,9 +3498,23 @@ export function App({ api }: { api: RecruitmentApi }) {
                         >
                           {c.name}
                         </button>
+                        <button className="detail-button" onClick={() => void toggleOrgSource(c.id)}>原文</button>
                         <button className="detail-button" onClick={() => void deleteCompany(c.id)}>删除</button>
                       </div>
                     ))}
+                    {orgSource && orgSource.companyId && (
+                      <div className="org-source-preview">
+                        <div className="section-heading">
+                          <strong>导入原文</strong>
+                          <button className="detail-button" onClick={() => setOrgSource(null)}>收起</button>
+                        </div>
+                        {orgSource.text ? (
+                          <pre className="jd-source-text">{orgSource.text}</pre>
+                        ) : (
+                          <p className="muted">该公司尚未保存导入原文。</p>
+                        )}
+                      </div>
+                    )}
 
                     <h4>搜索</h4>
                     <input value={orgSearch} onChange={(e) => setOrgSearch(e.target.value)} placeholder="姓名 / 岗位 / 职级" aria-label="搜索节点" />
@@ -2892,6 +3558,8 @@ export function App({ api }: { api: RecruitmentApi }) {
                     onUpdateEmployee={(id, changes) => void updateOrgEmployeeField(id, changes)}
                     onUpdateDepartment={(id, changes) => void updateOrgDepartmentField(id, changes)}
                     onDelete={(node) => void deleteOrgNode(node)}
+                    onBindEmployee={(id, phone, name) => bindOrgEmployee(id, phone, name)}
+                    onPreviewResume={(revisionId, name) => void previewResumeFile(revisionId, name)}
                     onCollapse={() => setRightCollapsed(true)}
                   />
                 )}
@@ -2904,21 +3572,16 @@ export function App({ api }: { api: RecruitmentApi }) {
           <section className="jd-panel">
             <form className="jd-form" onSubmit={(event) => void searchBd(event)}>
               <input value={bdQuery} onChange={(e) => setBdQuery(e.target.value)} placeholder="输入自然语言需求，如「找上海做大模型算法的公司，最好在招人」" aria-label="BD 深度检索" />
-              <button type="submit" disabled={bdLoading}>{bdLoading ? "检索中…" : "深度检索"}</button>
+              <LoadingButton type="submit" loading={bdLoading}>深度检索</LoadingButton>
             </form>
 
-            {bdProgress && (
-              <div className="bd-progress">
-                <span className="bd-progress-dot" />
-                <span>{bdProgress.message}</span>
-              </div>
-            )}
+            <LongTaskProgress message={bdProgress?.message ?? null} />
 
             {bdSessionId && (
               <div className="bd-toolbar">
                 <form className="jd-form" onSubmit={(event) => void followUpBd(event)}>
                   <input value={bdFollowUp} onChange={(e) => setBdFollowUp(e.target.value)} placeholder="追问：补充或修正检索方向…" aria-label="BD 追问" />
-                  <button type="submit" disabled={bdLoading}>追问</button>
+                  <LoadingButton type="submit" loading={bdLoading}>追问</LoadingButton>
                 </form>
               </div>
             )}
@@ -2932,7 +3595,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   {bdLeads.map((lead) => (
                     <div key={lead.id} className="bd-lead-card">
                       <div className="bd-lead-head">
-                        <strong>{lead.company_name}</strong>
+                        <button type="button" className="bd-company-link" onClick={() => void lookupPool(lead.id)}>{lead.company_name}</button>
                         <span className="bd-role">{lead.job_title ?? "岗位未知"}</span>
                         {lead.is_hiring === true && <span className="bd-tag bd-tag-ok">在招</span>}
                         {lead.is_hiring === false && <span className="bd-tag bd-tag-bad">未在招</span>}
@@ -2951,18 +3614,65 @@ export function App({ api }: { api: RecruitmentApi }) {
                         </ul>
                       )}
                       {lead.summary && <p className="bd-summary">{lead.summary}</p>}
-                      {lead.url && <a className="bd-link" href={lead.url} target="_blank" rel="noreferrer">{lead.url}</a>}
+                      {lead.url && (
+                        <div className="bd-link-row">
+                          <button type="button" className="detail-button" onClick={() => void openExternal(lead.url as string)}>打开链接</button>
+                          <button type="button" className="detail-button" onClick={() => void copyLink(lead.url as string)}>复制链接</button>
+                        </div>
+                      )}
                       {lead.evidence.length > 0 && (
                         <ul className="bd-evidence">
                           {lead.evidence.map((item, index) => (
                             <li key={index}>
                               {item.claim ? <strong>{item.claim}</strong> : null}
                               {item.quote ? <span>：{item.quote}</span> : null}
-                              {item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer">（来源）</a> : null}
+                              {item.source_url ? <button type="button" className="bd-source-link" onClick={() => void openExternal(item.source_url as string)}>（来源）</button> : null}
                             </li>
                           ))}
                         </ul>
                       )}
+                      <div className="bd-pool">
+                        <div className="bd-pool-head">
+                          <button
+                            type="button"
+                            className="detail-button"
+                            disabled={bdPoolBusyId === lead.id}
+                            onClick={() => void lookupPool(lead.id)}
+                          >
+                            {bdPoolBusyId === lead.id ? "查询中…" : "查人才库"}
+                          </button>
+                          {(bdPoolByLead[lead.id] ?? []).length > 0 && (
+                            <button
+                              type="button"
+                              className="detail-button"
+                              onClick={() => togglePoolCollapse(lead.id)}
+                            >
+                              {collapsedPool[lead.id] ? "展开" : "收起"}
+                            </button>
+                          )}
+                        </div>
+                        {!collapsedPool[lead.id] && (bdPoolByLead[lead.id] ?? []).length > 0 && (
+                          <ul className="bd-pool-results">
+                            {bdPoolByLead[lead.id].map((c) => (
+                              <li key={c.candidate_id}>
+                                <span>{c.name}{c.phone ? ` · ${c.phone}` : ""}</span>
+                                <span className="bd-pool-actions">
+                                  <button
+                                    type="button"
+                                    className="detail-button"
+                                    onClick={() => void previewResumeFile(c.revision_id, c.name)}
+                                  >
+                                    预览简历
+                                  </button>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {bdPoolByLead[lead.id] && bdPoolByLead[lead.id].length === 0 && (
+                          <p className="muted">人才库中未找到相关候选人</p>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -3007,21 +3717,115 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="jd-row">
                 <input value={settings.deepseek_api_key ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_api_key: e.target.value })} placeholder="DeepSeek API Key" aria-label="DeepSeek API Key" />
               </div>
+              <div className="section-heading" style={{ marginTop: 12 }}><h3>文本 / 视觉模型</h3></div>
               <div className="jd-row">
-                <input value={settings.siliconflow_api_key ?? ""} onChange={(e) => setSettings({ ...settings, siliconflow_api_key: e.target.value })} placeholder="SiliconFlow API Key" aria-label="SiliconFlow API Key" />
+                <select
+                  aria-label="文本供应商"
+                  value=""
+                  onChange={(e) => {
+                    const vendor = vendors.find((v) => v.key === e.target.value);
+                    if (vendor) setSettings({ ...settings, text_base_url: vendor.base_url, text_model: vendor.text_model || undefined });
+                  }}
+                >
+                  <option value="">文本供应商预设</option>
+                  {vendors.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+                </select>
+                <input value={settings.text_api_key ?? ""} onChange={(e) => setSettings({ ...settings, text_api_key: e.target.value })} placeholder="文本 API Key" aria-label="文本 API Key" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.text_base_url ?? ""} onChange={(e) => setSettings({ ...settings, text_base_url: e.target.value })} placeholder="文本 Base URL" aria-label="文本 Base URL" />
+                <input value={settings.text_model ?? ""} onChange={(e) => setSettings({ ...settings, text_model: e.target.value })} placeholder="文本模型" aria-label="文本模型" />
+              </div>
+              <div className="jd-row">
+                <select
+                  aria-label="视觉供应商"
+                  value=""
+                  onChange={(e) => {
+                    const vendor = vendors.find((v) => v.key === e.target.value);
+                    if (vendor) setSettings({ ...settings, vision_base_url: vendor.base_url, vision_model: vendor.vision_model || undefined });
+                  }}
+                >
+                  <option value="">视觉供应商预设</option>
+                  {vendors.filter((v) => v.vision_model).map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+                </select>
+                <input value={settings.vision_api_key ?? ""} onChange={(e) => setSettings({ ...settings, vision_api_key: e.target.value })} placeholder="视觉 API Key" aria-label="视觉 API Key" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.vision_base_url ?? ""} onChange={(e) => setSettings({ ...settings, vision_base_url: e.target.value })} placeholder="视觉 Base URL" aria-label="视觉 Base URL" />
+                <input value={settings.vision_model ?? ""} onChange={(e) => setSettings({ ...settings, vision_model: e.target.value })} placeholder="视觉模型" aria-label="视觉模型" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.siliconflow_api_key ?? ""} onChange={(e) => setSettings({ ...settings, siliconflow_api_key: e.target.value })} placeholder="SiliconFlow API Key（Embedding / Rerank）" aria-label="SiliconFlow API Key" />
                 <input value={settings.tavily_api_key ?? ""} onChange={(e) => setSettings({ ...settings, tavily_api_key: e.target.value })} placeholder="Tavily API Key" aria-label="Tavily API Key" />
               </div>
               <div className="jd-row">
                 <input value={settings.serpapi_api_key ?? ""} onChange={(e) => setSettings({ ...settings, serpapi_api_key: e.target.value })} placeholder="SerpApi API Key（Tavily 备选）" aria-label="SerpApi API Key" />
+              </div>
+              <div className="section-heading" style={{ marginTop: 12 }}><h3>邮箱（IMAP 收件 + SMTP 发件）</h3></div>
+              <div className="jd-row">
+                <select
+                  aria-label="邮箱预设"
+                  value=""
+                  onChange={(e) => {
+                    const host = e.target.value;
+                    if (host) setSettings({ ...settings, imap_host: host, smtp_host: host.replace("imap.", "smtp.") });
+                  }}
+                >
+                  <option value="">邮箱预设</option>
+                  <option value="imap.qq.com">QQ 邮箱</option>
+                  <option value="imap.163.com">163 邮箱</option>
+                </select>
+              </div>
+              <div className="jd-row">
                 <input value={settings.imap_host ?? ""} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} placeholder="IMAP 主机" aria-label="IMAP 主机" />
-              </div>
-              <div className="jd-row">
                 <input value={settings.imap_account ?? ""} onChange={(e) => setSettings({ ...settings, imap_account: e.target.value })} placeholder="IMAP 账号" aria-label="IMAP 账号" />
-                <input value={settings.imap_auth_code ?? ""} onChange={(e) => setSettings({ ...settings, imap_auth_code: e.target.value })} placeholder="IMAP 授权码" aria-label="IMAP 授权码" />
               </div>
               <div className="jd-row">
-                <input value={settings.imap_whitelist ?? ""} onChange={(e) => setSettings({ ...settings, imap_whitelist: e.target.value })} placeholder="发件人白名单（逗号分隔）" aria-label="发件人白名单" />
+                <input value={settings.imap_auth_code ?? ""} onChange={(e) => setSettings({ ...settings, imap_auth_code: e.target.value })} placeholder="IMAP 授权码" aria-label="IMAP 授权码" />
+                <input value={settings.smtp_host ?? ""} onChange={(e) => setSettings({ ...settings, smtp_host: e.target.value })} placeholder="SMTP 主机" aria-label="SMTP 主机" />
               </div>
+              <div className="jd-row">
+                <input value={settings.smtp_port ?? ""} onChange={(e) => setSettings({ ...settings, smtp_port: e.target.value ? Number(e.target.value) : undefined })} placeholder="SMTP 端口" aria-label="SMTP 端口" type="number" />
+                <input value={settings.smtp_account ?? ""} onChange={(e) => setSettings({ ...settings, smtp_account: e.target.value })} placeholder="SMTP 账号" aria-label="SMTP 账号" />
+              </div>
+              <div className="jd-row">
+                <input value={settings.smtp_auth_code ?? ""} onChange={(e) => setSettings({ ...settings, smtp_auth_code: e.target.value })} placeholder="SMTP 授权码" aria-label="SMTP 授权码" />
+                <input value={settings.reminder_to ?? ""} onChange={(e) => setSettings({ ...settings, reminder_to: e.target.value })} placeholder="提醒收件人邮箱" aria-label="提醒收件人邮箱" />
+              </div>
+              <div className="jd-row">
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={settings.smtp_ssl !== false} onChange={(e) => setSettings({ ...settings, smtp_ssl: e.target.checked })} />
+                  SMTP SSL
+                </label>
+              </div>
+              <p className="muted">QQ/163 邮箱需在邮箱设置中开启 IMAP/SMTP，并使用「授权码」作为密码，而非登录密码。</p>
+              <div className="jd-row" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                {(settings.imap_whitelist ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((tag) => (
+                  <span key={tag} className="bd-tag" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {tag}
+                    <button type="button" className="bd-source-link" onClick={() => removeMailWhitelistTag(tag)}>×</button>
+                  </span>
+                ))}
+              </div>
+              <div className="jd-row">
+                <input value={mailWhitelistInput} onChange={(e) => setMailWhitelistInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addMailWhitelistTag(); } }} placeholder="添加发件人白名单（域名或完整邮箱）" aria-label="添加发件人白名单" />
+                <button type="button" className="detail-button" onClick={addMailWhitelistTag}>添加</button>
+              </div>
+              <div className="jd-row">
+                <button type="button" className="detail-button" onClick={() => void testMailConfig()}>连接测试</button>
+                <button type="button" className="detail-button" onClick={() => void syncMailNow()}>立即同步</button>
+                <button type="button" className="detail-button" onClick={() => void loadMailStatus()}>刷新同步状态</button>
+              </div>
+              {mailTestResult && (
+                <div className="health-grid">
+                  <div className="health-card"><small>IMAP</small><strong>{mailTestResult.imap.ok ? "正常" : "异常"}：{mailTestResult.imap.message}</strong></div>
+                  <div className="health-card"><small>SMTP</small><strong>{mailTestResult.smtp.ok ? "正常" : "异常"}：{mailTestResult.smtp.message}</strong></div>
+                </div>
+              )}
+              {mailSyncMessage && <p className="muted">{mailSyncMessage}</p>}
+              {mailStatus && (
+                <p className="muted">邮箱已{mailStatus.configured ? "配置" : "未配置"} · 已同步收件 UID：{mailStatus.last_uid}</p>
+              )}
               {settingsMessage && <p className="muted">{settingsMessage}</p>}
               {providerChecks.length > 0 && (
                 <div className="health-grid">
@@ -3063,7 +3867,6 @@ export function App({ api }: { api: RecruitmentApi }) {
               </div>
             )}
 
-            {SHOW_ADVANCED_SETTINGS && (<>
             <div className="case-section">
               <div className="section-heading">
                 <h2>回收站</h2>
@@ -3090,8 +3893,8 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="section-heading">
                 <h2>备份与恢复</h2>
                 <div className="case-actions">
-                  <button className="import-button" onClick={() => void loadBackups()}>加载备份</button>
-                  <button className="import-button" onClick={() => void createBackup()}>立即备份</button>
+                  <button className="import-button" disabled={backupBusy} onClick={() => void loadBackups()}>加载备份</button>
+                  <button className="import-button" disabled={backupBusy} onClick={() => void createBackup()}>{backupBusy ? "备份中…" : "立即备份"}</button>
                 </div>
               </div>
               {backups.length === 0 ? (
@@ -3104,7 +3907,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                         <strong>{b.filename}</strong>
                         <small>{b.created}</small>
                       </div>
-                      <button className="detail-button" onClick={() => void restoreBackupItem(b.filename)}>恢复</button>
+                      <button className="detail-button" disabled={backupBusy} onClick={() => void restoreBackupItem(b.filename)}>恢复</button>
                     </div>
                   ))}
                 </div>
@@ -3123,7 +3926,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   aria-label="便携备份口令"
                   type="password"
                 />
-                <button type="button" onClick={() => void createPortableBackup()}>创建加密便携备份</button>
+                <button type="button" disabled={portableBusy} onClick={() => void createPortableBackup()}>{portableBusy ? "创建中…" : "创建加密便携备份"}</button>
                 <div className="jd-row">
                   <input
                     value={portableRestorePath}
@@ -3138,7 +3941,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                     aria-label="便携备份恢复目录"
                   />
                 </div>
-                <button type="button" onClick={() => void restorePortableBackup()}>恢复便携备份</button>
+                <button type="button" disabled={portableBusy} onClick={() => void restorePortableBackup()}>{portableBusy ? "恢复中…" : "恢复便携备份"}</button>
                 {portableMessage && <p role="status">{portableMessage}</p>}
               </div>
             </div>
@@ -3147,7 +3950,7 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="section-heading"><h2>数据迁移</h2></div>
               <form className="jd-form" onSubmit={(event) => void migrateData(event)}>
                 <input value={migrationTarget} onChange={(e) => setMigrationTarget(e.target.value)} placeholder="新数据目录（绝对路径）" aria-label="迁移目标目录" />
-                <button type="submit">复制并校验</button>
+                <button type="submit" disabled={migrationBusy}>{migrationBusy ? "迁移中…" : "复制并校验"}</button>
               </form>
               {migrationReport && (
                 <div className="case-events">
@@ -3159,11 +3962,39 @@ export function App({ api }: { api: RecruitmentApi }) {
                   </div>
                 </div>
               )}
+              {migrationMessage && <p role="status" className="muted">{migrationMessage}</p>}
             </div>
-            </>)}
           </section>
         )}
       </main>
+
+      {jdDirectionRevisionId && (
+        <div className="match-drawer-backdrop" onClick={() => setJdDirectionRevisionId(null)}>
+          <aside className="match-drawer" role="dialog" aria-modal="true" aria-label="编辑岗位方向" onClick={(e) => e.stopPropagation()}>
+            <div className="match-drawer-header">
+              <div><h2>编辑岗位方向</h2><small>{jdDirectionRevisionId}</small></div>
+              <button className="detail-button" onClick={() => setJdDirectionRevisionId(null)}>关闭</button>
+            </div>
+            <div className="match-drawer-body">
+              <DirectionEditor api={api} kind="jd" revisionId={jdDirectionRevisionId} onCancel={() => setJdDirectionRevisionId(null)} />
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {candidateDirectionRevisionId && (
+        <div className="match-drawer-backdrop" onClick={() => setCandidateDirectionRevisionId(null)}>
+          <aside className="match-drawer" role="dialog" aria-modal="true" aria-label="编辑候选人方向" onClick={(e) => e.stopPropagation()}>
+            <div className="match-drawer-header">
+              <div><h2>编辑候选人方向</h2><small>{candidateDirectionRevisionId}</small></div>
+              <button className="detail-button" onClick={() => setCandidateDirectionRevisionId(null)}>关闭</button>
+            </div>
+            <div className="match-drawer-body">
+              <DirectionEditor api={api} kind="resume" revisionId={candidateDirectionRevisionId} onCancel={() => setCandidateDirectionRevisionId(null)} />
+            </div>
+          </aside>
+        </div>
+      )}
 
       {matchDrawer && (
         <div className="match-drawer-backdrop" onClick={() => setMatchDrawer(null)}>
@@ -3206,9 +4037,15 @@ export function App({ api }: { api: RecruitmentApi }) {
                               <div className="case-actions">
                                 <button className="detail-button" onClick={() => void previewResumeFile(item.revision_id, item.name, item.original_filename ?? "")}>查看详情</button>
                                 <button className="detail-button" onClick={() => void downloadResumeFile(item.revision_id, item.original_filename ?? item.name)}>下载</button>
+                                <button className="detail-button" onClick={() => setCandidateDirectionRevisionId(item.revision_id)}>方向不匹配</button>
                                 <button className="detail-button" disabled={creatingCase || !item.result_id} onClick={() => void createCaseFromDrawer(item.result_id || "")}>{matchCaseIds[item.result_id || ""] ? "查看流程" : "建流程"}</button>
                                 {status !== "未处理" && <span className="match-status">{status}</span>}
                               </div>
+                              {(item.candidate_primary_direction || item.direction_explanation) && (
+                                <div className="candidate-line">
+                                  <small>方向：{item.candidate_primary_direction ?? "—"}{item.candidate_direction_source ? `（${item.candidate_direction_source}）` : ""} · {item.direction_explanation ?? ""}</small>
+                                </div>
+                              )}
                             </td>
                           </tr>
                           {(p?.experiences?.length || p?.projects?.length) ? (
@@ -3276,7 +4113,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       )}
 
       {caseDrawer && <CaseDrawer key={caseDrawer.id} api={api} initialCase={caseDrawer} onClose={() => setCaseDrawer(null)} onUpdated={(detail) => { setCaseDrawer(detail); setCases((items) => items.map((item) => item.id === detail.id ? detail : item)); }} />}
-      {resumeReview && <ResumeReviewDrawer key={resumeReview.revision_id} api={api} initialReview={resumeReview} onClose={() => setResumeReview(null)} onApproved={() => void loadCandidates()} />}
+      {resumeReview && <ResumeReviewDrawer key={resumeReview.revision_id} api={api} initialReview={resumeReview} onClose={() => setResumeReview(null)} onApproved={() => void loadCandidates()} onForceReparse={(revisionId) => { setResumeReview(null); void forceReparse(revisionId); }} />}
 
       {previewUrl && (
         <div className="preview-overlay" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }}>

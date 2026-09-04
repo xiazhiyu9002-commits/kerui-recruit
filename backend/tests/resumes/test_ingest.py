@@ -23,8 +23,8 @@ def make_service(tmp_path: Path) -> tuple[ResumeIngestService, Session]:
     return ResumeIngestService(session, store), session
 
 
-def test_ingest_reuses_blob_but_creates_a_new_resume_version(tmp_path: Path) -> None:
-    """A new upload must preserve version history without duplicating bytes."""
+def test_ingest_identical_content_is_already_imported(tmp_path: Path) -> None:
+    """相同文件（即使文件名不同）只导入一次，不重复创建版本和任务。"""
     service, session = make_service(tmp_path)
     with session:
         first = service.ingest(
@@ -38,15 +38,14 @@ def test_ingest_reuses_blob_but_creates_a_new_resume_version(tmp_path: Path) -> 
             )
         )
 
-        assert first.blob_id == second.blob_id
-        assert first.revision_id != second.revision_id
+        assert first.action == "CREATED"
+        assert second.action == "ALREADY_IMPORTED"
+        assert second.candidate_id == first.candidate_id
+        assert second.revision_id == first.revision_id
         assert session.scalar(select(func.count()).select_from(Blob)) == 1
-        assert session.get(Blob, first.blob_id).reference_count == 2
-        revisions = session.scalars(
-            select(ResumeRevision).order_by(ResumeRevision.created_at)
-        ).all()
-        assert [revision.is_current for revision in revisions] == [False, True]
-        assert session.scalar(select(func.count()).select_from(TaskRecord)) == 2
+        assert session.get(Blob, first.blob_id).reference_count == 1
+        assert session.scalar(select(func.count()).select_from(ResumeRevision)) == 1
+        assert session.scalar(select(func.count()).select_from(TaskRecord)) == 1
 
 
 def test_ingest_creates_candidate_and_pending_parse_task(tmp_path: Path) -> None:

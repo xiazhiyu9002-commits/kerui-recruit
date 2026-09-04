@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
@@ -26,11 +26,33 @@ class TaskResponse(BaseModel):
     updated_at: datetime
 
 
+class StatusBatchRequest(BaseModel):
+    task_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class StatusBatchResponse(BaseModel):
+    found: list[TaskResponse]
+    missing_ids: list[str]
+
+
 @router.get("", response_model=list[TaskResponse])
 def list_tasks(request: Request) -> list[TaskResponse]:
     services: AppServices = request.app.state.services
     tasks = services.task_repository.list()
     return [TaskResponse.model_validate(task, from_attributes=True) for task in tasks]
+
+
+@router.post("/status-batch", response_model=StatusBatchResponse)
+def status_batch(command: StatusBatchRequest, request: Request) -> StatusBatchResponse:
+    services: AppServices = request.app.state.services
+    task_ids = list(dict.fromkeys(command.task_ids))
+    tasks = services.task_repository.list_by_ids(task_ids)
+    found_ids = {task.id for task in tasks}
+    missing_ids = [task_id for task_id in task_ids if task_id not in found_ids]
+    return StatusBatchResponse(
+        found=[TaskResponse.model_validate(task, from_attributes=True) for task in tasks],
+        missing_ids=missing_ids,
+    )
 
 
 @router.get("/{task_id}", response_model=TaskResponse)

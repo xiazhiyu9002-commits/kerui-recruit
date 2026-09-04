@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.models import Company, Department, Employee
+from kerui_recruit.org.structured import ParsedOrgDraft, ParsedOrgEmployee
 
 
 _DEPARTMENT_FIELDS = frozenset({
@@ -16,7 +17,7 @@ _DEPARTMENT_FIELDS = frozenset({
 })
 
 _EMPLOYEE_FIELDS = frozenset({
-    "name", "department_id", "title", "job_level", "report_to",
+    "name", "department_id", "candidate_id", "phone_encrypted", "title", "job_level", "report_to",
     "subordinate_count", "tenure_years", "business_module", "status",
     "intention", "remark", "contact", "is_key",
 })
@@ -230,6 +231,168 @@ class OrgService:
             session.delete(employee)
             session.commit()
 
+    # --- Bulk import -----------------------------------------------------
+
+    def import_draft(
+        self,
+        company_id: str,
+        draft: ParsedOrgDraft,
+        source_text: str | None = None,
+    ) -> dict[str, int]:
+        """Persist a parsed org draft into the company's relational tree.
+
+        Departments/employees are deduplicated by name within the company and
+        merged with a "keep old, record conflict" policy; the raw import text is
+        preserved on the company for platform preview (never exported).
+        """
+        with self.session_factory() as session:
+            company = session.get(Company, company_id)
+            if company is None:
+                raise LookupError(f"Company not found: {company_id}")
+            if source_text:
+                company.source_text = source_text
+
+            existing_depts = {
+                d.name: d
+                for d in session.scalars(
+                    select(Department).where(Department.company_id == company_id)
+                ).all()
+            }
+            existing_emps = {
+                e.name: e
+                for e in session.scalars(
+                    select(Employee).where(Employee.company_id == company_id)
+                ).all()
+            }
+
+            department_by_name: dict[str, Department] = {}
+            for item in draft.departments:
+                department = existing_depts.get(item.name)
+                if department is None:
+                    department = Department(
+                        company_id=company_id,
+                        name=item.name,
+                        team_size=item.team_size,
+                        business_direction=item.business_direction,
+                    )
+                    session.add(department)
+                    existing_depts[item.name] = department
+                else:
+                    self._merge_department(department, item)
+                department_by_name[item.name] = department
+            session.flush()
+
+            for item in draft.departments:
+                if item.parent_name and item.parent_name in department_by_name:
+                    department = department_by_name[item.name]
+                    if department.parent_id is None:
+                        department.parent_id = department_by_name[item.parent_name].id
+
+            employee_by_key: dict[str, Employee] = {}
+            for item in draft.employees:
+                employee = existing_emps.get(item.name)
+                if employee is None:
+                    employee = Employee(
+                        company_id=company_id,
+                        name=item.name,
+                        title=item.title,
+                        job_level=item.job_level,
+                        subordinate_count=item.subordinate_count,
+                        remark=self._merge_remark(item),
+                    )
+                    session.add(employee)
+                    existing_emps[item.name] = employee
+                else:
+                    self._merge_employee(employee, item)
+                if item.department_name and item.department_name in department_by_name:
+                    if employee.department_id is None:
+                        employee.department_id = department_by_name[item.department_name].id
+                employee_by_key[item.name] = employee
+                if item.alias:
+                    employee_by_key[item.alias] = employee
+            session.flush()
+
+            for item in draft.employees:
+                employee = employee_by_key[item.name]
+                if item.report_to_name and item.report_to_name in employee_by_key:
+                    if employee.report_to is None:
+                        employee.report_to = employee_by_key[item.report_to_name].id
+
+            for item in draft.departments:
+                if item.leader_name and item.leader_name in employee_by_key:
+                    department = department_by_name[item.name]
+                    if department.leader_id is None:
+                        department.leader_id = employee_by_key[item.leader_name].id
+
+            session.commit()
+            return {"departments": len(draft.departments), "employees": len(draft.employees)}
+
+    @staticmethod
+    def _merge_remark(item: ParsedOrgEmployee) -> str:
+        parts: list[str] = []
+        if item.alias:
+            parts.append(f"花名：{item.alias}")
+        if item.team_size is not None:
+            parts.append(f"团队规模约{item.team_size}人")
+        if item.remark:
+            parts.append(item.remark)
+        return "；".join(parts)
+
+    @staticmethod
+    def _merge_field(old, new, label: str):
+        """Merge one scalar field: keep old on conflict, return (final, note)."""
+        if new is None or str(new).strip() == "":
+            return old, None
+        if old is None or str(old).strip() == "":
+            return new, None
+        if str(old).strip() != str(new).strip():
+            return old, f"{label}：保留「{old}」，忽略「{new}」"
+        return old, None
+
+    def _merge_department(self, department: Department, item) -> None:
+        conflicts: list[str] = []
+        department.team_size, note = self._merge_field(department.team_size, item.team_size, "团队人数")
+        if note:
+            conflicts.append(note)
+        department.business_direction, note = self._merge_field(
+            department.business_direction, item.business_direction, "业务方向"
+        )
+        if note:
+            conflicts.append(note)
+        if conflicts:
+            note = "；".join(conflicts)
+            department.hc_internal_note = (
+                f"{department.hc_internal_note}；【待复核】{note}"
+                if department.hc_internal_note
+                else f"【待复核】{note}"
+            )
+
+    def _merge_employee(self, employee: Employee, item) -> None:
+        conflicts: list[str] = []
+        employee.title, note = self._merge_field(employee.title, item.title, "职位")
+        if note:
+            conflicts.append(note)
+        employee.job_level, note = self._merge_field(employee.job_level, item.job_level, "职级")
+        if note:
+            conflicts.append(note)
+        if item.subordinate_count is not None:
+            if employee.subordinate_count is None:
+                employee.subordinate_count = item.subordinate_count
+            elif employee.subordinate_count != item.subordinate_count:
+                conflicts.append(
+                    f"下属人数：保留「{employee.subordinate_count}」，忽略「{item.subordinate_count}」"
+                )
+        new_remark = self._merge_remark(item)
+        if new_remark and new_remark not in (employee.remark or ""):
+            employee.remark = f"{employee.remark}；{new_remark}" if employee.remark else new_remark
+        if conflicts:
+            note = "；".join(conflicts)
+            employee.remark = (
+                f"{employee.remark}；【待复核】{note}"
+                if employee.remark
+                else f"【待复核】{note}"
+            )
+
     # --- Flat export rows ------------------------------------------------
 
     def flat_rows(self, company_id: str) -> list[dict[str, object]]:
@@ -388,6 +551,7 @@ class OrgService:
             )
 
         emp_by_id = {e.id: e for e in employees}
+        attached: set[str] = set()  # 已挂到部门/汇报链上的员工，避免在根节点重复出现
 
         children_map: dict[str, list[Employee]] = {}
         roots_by_dept: dict[str, list[Employee]] = {}
@@ -407,6 +571,7 @@ class OrgService:
                 dept_sizes[employee.department_id] = dept_sizes.get(employee.department_id, 0) + 1
 
         def build_employee(employee: Employee) -> OrgTreeNode:
+            attached.add(employee.id)
             node = OrgTreeNode(
                 id=employee.id,
                 kind="employee",
@@ -431,23 +596,23 @@ class OrgService:
             for child_dept in dept_by_parent.get(department.id, []):
                 node.children.append(build_department(child_dept))
 
-            added: set[str] = set()
             if leader is not None and (not leader.report_to or leader.report_to not in emp_by_id):
                 node.children.append(build_employee(leader))
-                added.add(leader.id)
 
             for employee in roots_by_dept.get(department.id, []):
-                if employee.id not in added:
+                if employee.id not in attached:
                     node.children.append(build_employee(employee))
-                    added.add(employee.id)
             return node
 
         root = OrgTreeNode(id=company.id, kind="company", name=company.name)
         for department in dept_by_parent.get(None, []):
             root.children.append(build_department(department))
 
-        # Unassigned employees with no reporting line hang off the company root.
+        # Unassigned employees with no reporting line hang off the company root,
+        # unless they were already attached as a department leader.
         for employee in employees:
+            if employee.id in attached:
+                continue
             if not employee.department_id and (not employee.report_to or employee.report_to not in emp_by_id):
                 root.children.append(build_employee(employee))
 

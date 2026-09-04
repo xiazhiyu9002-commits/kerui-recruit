@@ -1,8 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { App, type CaseDetail, type CaseEventItem, type RecruitmentApi } from "../src/App";
+import type { DirectionProfile } from "../src/resumes/direction-types";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function recruitmentFixture() {
   const api = fakeApi();
@@ -31,9 +37,9 @@ function recruitmentFixture() {
 }
 
 async function openRecruitment(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: /招聘流程/ }));
+  await user.click(screen.getByRole("button", { name: /流程中/ }));
   await user.click(await screen.findByRole("button", { name: "查看流程" }));
-  return screen.getByRole("dialog", { name: "招聘流程" });
+  return screen.getByRole("dialog", { name: "流程中" });
 }
 
 function selectTime(dialog: HTMLElement) {
@@ -84,7 +90,7 @@ describe("recruitment consistency through the App", () => {
     expect(await within(section).findByText("整理周报", { selector: "strong" })).toBeVisible();
     expect(submitted).toEqual({ title: "整理周报", remind_at: "2026-09-03T09:30:00+08:00", case_id: undefined });
     await user.click(within(section).getByRole("button", { name: "查看关联流程" }));
-    expect(await screen.findByRole("dialog", { name: "招聘流程" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "流程中" })).toBeVisible();
   });
 
 
@@ -186,7 +192,7 @@ describe("recruitment consistency through the App", () => {
     const user = userEvent.setup();
     render(<App api={api} />);
     expect(await screen.findByText("重新解析失败，已保留人工资料")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "解析异常 · 复核" }));
+    await user.click(screen.getByRole("button", { name: "解析异常·修正" }));
     expect(await screen.findByRole("dialog", { name: "简历复核" })).toBeVisible();
   });
 
@@ -222,7 +228,7 @@ describe("recruitment consistency through the App", () => {
     };
     const user = userEvent.setup();
     render(<App api={api} />);
-    await user.click(await screen.findByRole("button", { name: "待复核" }));
+    await user.click(await screen.findByRole("button", { name: "解析异常·修正" }));
     const dialog = await screen.findByRole("dialog", { name: "简历复核" });
     expect(within(dialog).getByLabelText("复核姓名")).toHaveValue("已确认姓名");
     expect(within(dialog).getByLabelText("复核技能")).toHaveValue("Python");
@@ -239,7 +245,7 @@ describe("recruitment consistency through the App", () => {
     expect(await within(dialog).findByText("复核已通过")).toBeVisible();
     expect(submissions[1]).toMatchObject({ name: "已确认姓名", skills: ["Python", "Go"], summary: "五年后端经验，负责支付系统。" });
     await user.click(within(dialog).getByRole("button", { name: "关闭" }));
-    expect(screen.queryByRole("button", { name: "待复核" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解析异常·修正" })).not.toBeInTheDocument();
   });
 
 
@@ -255,9 +261,9 @@ describe("recruitment consistency through the App", () => {
     await user.click(screen.getByText("JD 管理"));
     await user.click(await screen.findByRole("button", { name: "匹配" }));
     await user.click(screen.getByRole("button", { name: "建流程" }));
-    await user.click(within(await screen.findByRole("dialog", { name: "招聘流程" })).getByRole("button", { name: "关闭" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "流程中" })).getByRole("button", { name: "关闭" }));
     await user.click(screen.getByRole("button", { name: "查看流程" }));
-    expect(await screen.findByRole("dialog", { name: "招聘流程" })).toBeVisible();
+    expect(await screen.findByRole("dialog", { name: "流程中" })).toBeVisible();
     expect(created).toBe(1);
   });
 
@@ -285,7 +291,7 @@ describe("recruitment consistency through the App", () => {
     await user.click(within(dialog).getByRole("button", { name: "关闭" }));
     fixture.detail.note = "下周继续跟进";
     await user.click(screen.getByRole("button", { name: "查看流程" }));
-    dialog = await screen.findByRole("dialog", { name: "招聘流程" });
+    dialog = await screen.findByRole("dialog", { name: "流程中" });
     expect(within(dialog).getByText("下周继续跟进")).toBeVisible();
   });
 
@@ -389,11 +395,15 @@ describe("recruitment consistency through the App", () => {
 function fakeApi(): RecruitmentApi {
   return {
     importResume: async () => ({
+      action: "CREATED",
       candidate_id: "candidate-1",
       document_id: "document-1",
       revision_id: "revision-1",
       blob_id: "blob-1",
-      task_id: "task-1"
+      task_id: "task-1",
+      message: "",
+      conflict_candidate_ids: [],
+      created_task: true
     }),
     importFolder: async () => ({ imported: [], skipped: [], errors: [] }),
     getTask: async () => ({
@@ -404,6 +414,7 @@ function fakeApi(): RecruitmentApi {
       error_message: null
     }),
     listTasks: async () => [],
+    getTaskStatusBatch: async (taskIds) => ({ found: [], missing_ids: taskIds }),
     controlTask: async (_taskId, action) => ({
       id: "task-1",
       task_type: "PARSE_RESUME",
@@ -412,6 +423,11 @@ function fakeApi(): RecruitmentApi {
       error_message: null
     }),
     listResumeRevisions: async () => [],
+    lookupPool: async () => [],
+    testMail: async () => ({ imap: { ok: true, message: "ok" }, smtp: { ok: true, message: "ok" } }),
+    syncMail: async () => ({ ingested: 0, revision_ids: [] }),
+    mailStatus: async () => ({ configured: false, last_uid: 0 }),
+    reviseOrgImport: async (draft) => draft,
     downloadResume: async () => undefined,
     previewResume: async () => "blob:preview",
     listCandidates: async () => [],
@@ -571,18 +587,59 @@ function fakeApi(): RecruitmentApi {
     listDepartments: async () => [],
     createDepartment: async (input) => ({ id: "dept-1", company_id: input.company_id, parent_id: input.parent_id ?? null, name: input.name, leader_id: null, leader_report_to: null, team_size: null, business_direction: null, tech_stack: null, office_location: null, hc_status: null, hc_internal_note: null }),
     listEmployees: async () => [],
-    createEmployee: async (input) => ({ id: "emp-1", company_id: input.company_id, department_id: input.department_id ?? null, name: input.name, title: input.title ?? null, job_level: input.job_level ?? null, report_to: input.report_to ?? null, subordinate_count: null, tenure_years: null, business_module: null, status: null, intention: null, remark: null, contact: null, is_key: input.is_key ?? false }),
+    createEmployee: async (input) => ({ id: "emp-1", company_id: input.company_id, department_id: input.department_id ?? null, candidate_id: null, candidate_name: null, current_revision_id: null, name: input.name, title: input.title ?? null, job_level: input.job_level ?? null, report_to: input.report_to ?? null, subordinate_count: null, tenure_years: null, business_module: null, status: null, intention: null, remark: null, contact: null, is_key: input.is_key ?? false }),
     getOrgTree: async () => ({ id: "company-1", kind: "company", name: "字节跳动", title: null, job_level: null, team_size: null, is_key: false, children: [] }),
     exportOrgInternal: async () => undefined,
     exportOrgClient: async () => undefined,
     exportOrgArchPdf: async () => undefined,
     updateDepartment: async (departmentId, changes) => ({ id: departmentId, company_id: "company-1", parent_id: null, name: changes.name ?? "部门", leader_id: null, leader_report_to: null, team_size: null, business_direction: null, tech_stack: null, office_location: null, hc_status: null, hc_internal_note: null }),
     deleteDepartment: async () => undefined,
-    updateEmployee: async (employeeId, changes) => ({ id: employeeId, company_id: "company-1", department_id: null, name: changes.name ?? "人员", title: null, job_level: null, report_to: null, subordinate_count: null, tenure_years: null, business_module: null, status: null, intention: null, remark: null, contact: null, is_key: false }),
+    updateEmployee: async (employeeId, changes) => ({ id: employeeId, company_id: "company-1", department_id: null, candidate_id: null, candidate_name: null, current_revision_id: null, name: changes.name ?? "人员", title: null, job_level: null, report_to: null, subordinate_count: null, tenure_years: null, business_module: null, status: null, intention: null, remark: null, contact: null, is_key: false }),
     deleteEmployee: async () => undefined,
     deleteCompany: async () => undefined,
+    parseOrgImport: async () => ({ draft: { company_name: "得物", departments: [], employees: [] }, questions: [] }),
+    parseOrgWord: async () => ({ draft: { company_name: "得物", departments: [], employees: [] }, questions: [] }),
+    answerOrgImport: async () => ({ draft: { company_name: "得物", departments: [], employees: [] }, questions: [] }),
+    commitOrgImport: async () => ({ departments: 0, employees: 0 }),
+    getCompanySource: async () => ({ company_id: "company-1", source_text: "得物 · 10 个部门 · 10 名人员" }),
+    bindEmployee: async (employeeId) => ({ employee_id: employeeId, matched: false, candidate_id: null, candidate_name: null, name_mismatch: false }),
     getSettings: async () => ({}),
     updateSettings: async () => ({}),
+    getVendors: async () => [],
+    getDirections: async () => ({ role_families: [], business_domains: [] }),
+    getDirectionTaxonomy: async () => ({ taxonomy_version: "career-direction-v1", role_families: [{ code: "BACKEND", label: "后端开发", aliases: [] }], leadership: { IC: "专业岗位" }, business_domains: { PAYMENTS: "支付" } }),
+    getResumeDirectionProfile: async () => ({
+      direction_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      effective_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      machine_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      manual_profile: null,
+      profile_version: "v1",
+      latest_active_correction_id: null,
+      has_manual_override: false
+    }),
+    reevaluateResumeDirection: async () => ({
+      machine_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      manual_profile: null,
+      effective_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      profile_version: "v1"
+    }),
+    saveResumeDirectionProfile: async (_revisionId, profile) => ({ direction_profile: profile, profile_version: "v2", correction_id: "correction-1" }),
+    getJdDirectionProfile: async () => ({
+      direction_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      effective_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      machine_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      manual_profile: null,
+      profile_version: "v1",
+      latest_active_correction_id: null,
+      has_manual_override: false
+    }),
+    reevaluateJdDirection: async () => ({
+      machine_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      manual_profile: null,
+      effective_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "UNKNOWN", role_families: [], leadership: null, business_domains: [], specialties: [] },
+      profile_version: "v1"
+    }),
+    saveJdDirectionProfile: async (_revisionId, profile) => ({ direction_profile: profile, profile_version: "v2", correction_id: "correction-1" }),
     exportMatchRun: async () => undefined,
     listBackups: async () => [],
     createBackup: async () => ({ filename: "backup_1.sqlite3", path: "/tmp/backup_1.sqlite3" }),
@@ -783,5 +840,226 @@ describe("desktop recruitment workflow", () => {
     await user.type(screen.getByLabelText("DeepSeek API Key"), "sk-test-key");
     await user.click(screen.getByRole("button", { name: "保存设置" }));
     expect(await screen.findByText("设置已保存，重启应用后生效")).toBeVisible();
+  });
+
+  test("shows machine and manual direction and supports re-evaluate and undo", async () => {
+    const api = fakeApi();
+    const machine: DirectionProfile = { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "CONFIDENT", role_families: [{ code: "BACKEND", label: "后端开发", confidence: 0.9, source: "LLM", evidence: [], is_primary: true }], leadership: null, business_domains: [], specialties: [] };
+    const manual: DirectionProfile = { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "CONFIDENT", role_families: [{ code: "AI_ML", label: "算法", confidence: 1.0, source: "USER", evidence: [], is_primary: true }], leadership: null, business_domains: [], specialties: [] };
+    api.listCandidates = async () => [{ candidate_id: "candidate-1", revision_id: "revision-1", display_name: "张三", total_years: 5, highest_degree: null, location: null, status: "ACTIVE", revision_status: "FAILED", phone: null, original_filename: "resume.pdf", parsed_data: null }];
+    api.getResumeReview = async () => ({ revision_id: "revision-1", status: "FAILED", review_required: true, raw_text: "正文", parsed_data: null, review_data: { name: "机器姓名" }, manual_overrides: { name: "已确认姓名" }, extraction_diagnostics: {}, error_code: "E_PENDING_REVIEW", error_message: "请复核" });
+    api.getResumeDirectionProfile = async () => ({ direction_profile: manual, effective_profile: manual, machine_profile: machine, manual_profile: manual, profile_version: "v1", latest_active_correction_id: "correction-1", has_manual_override: true });
+    let reevaluated = 0;
+    api.reevaluateResumeDirection = async () => { reevaluated += 1; return { machine_profile: machine, manual_profile: manual, effective_profile: manual, profile_version: "v1" }; };
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "解析异常·修正" }));
+    const dialog = await screen.findByRole("dialog", { name: "简历复核" });
+    expect(await within(dialog).findByText("机器结果：后端开发（主）")).toBeVisible();
+    expect(within(dialog).getByText("人工覆盖：算法（主）")).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "撤销人工修改" })).toBeEnabled();
+    await user.click(within(dialog).getByRole("button", { name: "重新评估机器方向" }));
+    expect(reevaluated).toBe(1);
+  });
+
+  test("opens the JD direction editor from the JD list", async () => {
+    const api = fakeApi();
+    api.listJds = async () => [{ jd_id: "jd-1", revision_id: "rev-1", company: "某金融", title: "Java 后端", status: "READY", jd_status: "OPEN", ai_category: null, location: null, min_years: null, parsed_data: null, source_text: "Java 后端" }];
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("JD 管理"));
+    await user.click(await screen.findByRole("button", { name: "编辑方向" }));
+    const dialog = await screen.findByRole("dialog", { name: "编辑岗位方向" });
+    expect(await within(dialog).findByRole("button", { name: "保存" })).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: "重新评估机器方向" })).toBeVisible();
+  });
+
+  test("opens the candidate direction editor from a match result", async () => {
+    const api = fakeApi();
+    api.listJds = async () => [{ jd_id: "jd-1", revision_id: "rev-1", company: "某金融", title: "Java 后端", status: "READY", jd_status: "OPEN", ai_category: null, location: null, min_years: null, parsed_data: null, source_text: "Java 后端" }];
+    api.matchJd = async () => ({
+      run_id: "run-1",
+      items: [{ candidate_id: "candidate-1", revision_id: "revision-1", name: "张三", phone: null, reasons: [], parsed_data: null, content: "张三 Python", score: 0.95, matched_channels: ["bm25"], total_years: 6, highest_degree: "MASTER", location: "上海", result_id: "result-1", candidate_primary_direction: "BACKEND", candidate_direction_source: "LLM", direction_explanation: "方向一致（BACKEND）" }]
+    });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("JD 管理"));
+    await user.click(await screen.findByRole("button", { name: "匹配" }));
+    await user.click(await screen.findByRole("button", { name: "方向不匹配" }));
+    expect(await screen.findByRole("dialog", { name: "编辑候选人方向" })).toBeVisible();
+  });
+
+  test("shows the primary direction and source in the candidate list", async () => {
+    const api = fakeApi();
+    api.listCandidatesPage = async () => ({
+      items: [{ candidate_id: "candidate-1", revision_id: "revision-1", display_name: "张三", total_years: 5, highest_degree: "MASTER", location: "上海", status: "AVAILABLE", revision_status: "READY", phone: null, original_filename: "resume.pdf", parsed_data: { name: "张三", direction_profile: { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "CONFIDENT", role_families: [{ code: "BACKEND", label: "后端开发", confidence: 0.9, source: "LLM", evidence: [], is_primary: true }], leadership: null, business_domains: [], specialties: [] } } }],
+      total: 1, page: 1, page_size: 100, has_more: false
+    });
+    render(<App api={api} />);
+    expect(await screen.findByText(/后端开发/)).toBeVisible();
+  });
+});
+
+
+describe("settings backup and recycle bin", () => {
+  const backupFixture = () => ({
+    filename: "backup_1.sqlite3",
+    path: "/tmp/backup_1.sqlite3",
+    size_bytes: "123",
+    created: "2026-01-01T00:00:00Z",
+  });
+
+  test("shows recycle bin and backup sections without advanced flag", async () => {
+    const user = userEvent.setup();
+    render(<App api={fakeApi()} />);
+
+    await user.click(screen.getByText("设置"));
+
+    expect(screen.getByRole("heading", { name: "回收站" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "备份与恢复" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "数据迁移" })).toBeVisible();
+  });
+
+  test("load, create and restore buttons call the correct API", async () => {
+    const api = fakeApi();
+    const listBackups = vi.fn(async () => [backupFixture()]);
+    const createBackup = vi.fn(async () => ({ filename: "backup_1.sqlite3", path: "/tmp/backup_1.sqlite3" }));
+    const restoreBackup = vi.fn(async () => ({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" }));
+    api.listBackups = listBackups;
+    api.createBackup = createBackup;
+    api.restoreBackup = restoreBackup;
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+
+    await user.click(screen.getByRole("button", { name: "加载备份" }));
+    expect(listBackups).toHaveBeenCalled();
+    await screen.findByText("backup_1.sqlite3");
+
+    await user.click(screen.getByRole("button", { name: "立即备份" }));
+    expect(createBackup).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+    expect(restoreBackup).toHaveBeenCalledWith("backup_1.sqlite3");
+  });
+
+  test("asks for confirmation before restoring", async () => {
+    const api = fakeApi();
+    api.listBackups = async () => [backupFixture()];
+    const restoreBackup = vi.fn(async () => ({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" }));
+    api.restoreBackup = restoreBackup;
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    await user.click(screen.getByRole("button", { name: "加载备份" }));
+    await screen.findByText("backup_1.sqlite3");
+
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("确认恢复备份"));
+    expect(restoreBackup).not.toHaveBeenCalled();
+  });
+
+  test("disables the restore button while a restore is running", async () => {
+    const api = fakeApi();
+    api.listBackups = async () => [backupFixture()];
+    let resolveRestore!: (value: { restored_from: string; safety_backup: string }) => void;
+    api.restoreBackup = () => new Promise((resolve) => { resolveRestore = resolve; });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    await user.click(screen.getByRole("button", { name: "加载备份" }));
+    await screen.findByText("backup_1.sqlite3");
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复" }));
+    expect(screen.getByRole("button", { name: "恢复" })).toBeDisabled();
+
+    resolveRestore({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "恢复" })).not.toBeDisabled());
+  });
+
+  test("shows backend error when restore fails", async () => {
+    const api = fakeApi();
+    api.listBackups = async () => [backupFixture()];
+    api.restoreBackup = async () => { throw new Error("备份数据库完整性检查失败"); };
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    await user.click(screen.getByRole("button", { name: "加载备份" }));
+    await screen.findByText("backup_1.sqlite3");
+
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("备份数据库完整性检查失败");
+  });
+
+  test("shows restart prompt after a successful restore", async () => {
+    const api = fakeApi();
+    api.listBackups = async () => [backupFixture()];
+    api.restoreBackup = async () => ({ restored_from: "backup_1.sqlite3", safety_backup: "/tmp/safety.sqlite3" });
+    vi.stubGlobal("confirm", vi.fn(() => true));
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    await user.click(screen.getByRole("button", { name: "加载备份" }));
+    await screen.findByText("backup_1.sqlite3");
+
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+
+    expect(await screen.findByText(/请从托盘退出后重新启动/)).toBeVisible();
+  });
+
+  test("shows migration path conflict error", async () => {
+    const api = fakeApi();
+    api.migrateData = async () => { throw new Error("目标目录与当前数据目录相同，请选择其他目录"); };
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    await user.type(screen.getByLabelText("迁移目标目录"), "C:/same-dir");
+    await user.click(screen.getByRole("button", { name: "复制并校验" }));
+
+    expect(await screen.findByText("目标目录与当前数据目录相同，请选择其他目录")).toBeVisible();
+  });
+});
+
+
+describe("org import and binding", () => {
+  test("parses and previews org import in the mapping tab", async () => {
+    const api = fakeApi();
+    const parseOrgImport = vi.fn(async () => ({
+      draft: {
+        company_name: "得物",
+        departments: [{ name: "算法平台", parent_name: null, leader_name: null, team_size: null, business_direction: null }],
+        employees: [{ name: "贺喜", alias: "叶程", title: "负责人", job_level: null, report_to_name: null, department_name: "算法平台", subordinate_count: null, team_size: null, remark: null }],
+      },
+      questions: [],
+    }));
+    api.parseOrgImport = parseOrgImport;
+
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("Mapping"));
+    await user.type(screen.getByLabelText("组织文本"), "算法平台 负责人 贺喜");
+    await user.click(screen.getByRole("button", { name: "解析粘贴文本" }));
+
+    expect(parseOrgImport).toHaveBeenCalledWith("算法平台 负责人 贺喜");
+    expect(await screen.findByText("解析结果（可编辑后导入）")).toBeVisible();
+    expect(screen.getByLabelText("导入公司名称")).toHaveValue("得物");
+    expect(screen.getByText("部门（1）")).toBeVisible();
+    expect(screen.getByText("人员（1）")).toBeVisible();
+    expect(screen.getByLabelText("部门0名称")).toHaveValue("算法平台");
+    expect(screen.getByLabelText("人员0姓名")).toHaveValue("贺喜");
+    expect(screen.getByLabelText("人员0花名")).toHaveValue("叶程");
   });
 });

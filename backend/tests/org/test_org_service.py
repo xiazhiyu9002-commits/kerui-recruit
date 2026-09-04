@@ -215,6 +215,24 @@ def test_build_tree_combines_departments_and_reporting(service: OrgService) -> N
     assert lead_node.children[0].name == "王五"
 
 
+def test_build_tree_does_not_duplicate_unassigned_leader(service: OrgService) -> None:
+    company = service.create_company(name="得物")
+    dept = service.create_department(company_id=company.id, name="算法平台")
+    leader = service.create_employee(company_id=company.id, name="魏超", title="负责人")
+    service.update_department(dept.id, leader_id=leader.id)
+
+    tree = service.build_tree(company.id)
+    ids: list[str] = []
+
+    def walk(node) -> None:
+        ids.append(node.id)
+        for child in node.children:
+            walk(child)
+
+    walk(tree)
+    assert ids.count(leader.id) == 1
+
+
 def test_build_arch_tree_shows_departments_only(service: OrgService) -> None:
     company = service.create_company(name="字节跳动")
     dept = service.create_department(company_id=company.id, name="技术部")

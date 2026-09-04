@@ -3,8 +3,13 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
-from kerui_recruit.backup.portable import PortableRestoreReport, is_same_volume
+from kerui_recruit.backup.portable import (
+    PortableRestoreError,
+    PortableRestoreReport,
+    is_same_volume,
+)
 
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
@@ -92,11 +97,14 @@ def create_portable(command: CreatePortableRequest, request: Request) -> CreateP
 @router.post("/portable/restore", response_model=RestorePortableResponse)
 def restore_portable(command: RestorePortableRequest, request: Request) -> RestorePortableResponse:
     services: AppServices = request.app.state.services
-    report: PortableRestoreReport = services.portable_backup_service.restore(
-        Path(command.backup_path),
-        Path(command.target_root),
-        command.passphrase,
-    )
+    try:
+        report: PortableRestoreReport = services.portable_backup_service.restore(
+            Path(command.backup_path),
+            Path(command.target_root),
+            command.passphrase,
+        )
+    except PortableRestoreError as error:
+        raise ApiError(422, error.code, str(error)) from error
     return RestorePortableResponse(
         target_root=report.target_root,
         files_restored=report.files_restored,

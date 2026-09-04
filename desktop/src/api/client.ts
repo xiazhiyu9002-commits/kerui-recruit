@@ -5,6 +5,7 @@ import type {
   BackupSnapshot,
   BdAgentQueryResult,
   BdLead,
+  BdPoolCandidate,
   BdProgress,
   CandidateContact,
   CandidateListItem,
@@ -41,6 +42,9 @@ import type {
   OrgCompany,
   OrgDepartment,
   OrgEmployee,
+  OrgImportDraft,
+  OrgParseResult,
+  BindEmployeeResult,
   OrgTreeNode,
   ProviderCheck,
   RecruitmentApi,
@@ -48,9 +52,18 @@ import type {
   ReverseMatchItem,
   ResumeRevision,
   ResumeReview,
+  SearchDirectionTaxonomy,
   TaskAction,
-  TaskStatus
+  TaskStatus,
+  VendorPreset
 } from "../App";
+import type {
+  DirectionEvaluationResponse,
+  DirectionProfile,
+  DirectionProfileDetailResponse,
+  DirectionProfileResponse,
+  DirectionTaxonomy
+} from "../resumes/direction-types";
 
 
 export interface RuntimeConfig {
@@ -137,6 +150,17 @@ export class ApiClient implements RecruitmentApi {
     return this.request<TaskStatus[]>("/api/tasks");
   }
 
+  getTaskStatusBatch(taskIds: string[]): Promise<{ found: TaskStatus[]; missing_ids: string[] }> {
+    return this.request<{ found: TaskStatus[]; missing_ids: string[] }>(
+      "/api/tasks/status-batch",
+      {
+        body: JSON.stringify({ task_ids: taskIds }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
   controlTask(taskId: string, action: TaskAction): Promise<TaskStatus> {
     return this.request<TaskStatus>(
       `/api/tasks/${encodeURIComponent(taskId)}/${action}`,
@@ -177,7 +201,7 @@ export class ApiClient implements RecruitmentApi {
     );
     if (!response.ok) throw new Error("下载失败");
     const blob = await response.blob();
-    this.triggerDownload(blob, filename);
+    await this.triggerDownload(blob, filename);
   }
 
   async previewResume(revisionId: string): Promise<string> {
@@ -198,6 +222,10 @@ export class ApiClient implements RecruitmentApi {
       headers: { "Content-Type": "application/json" },
       method: "POST"
     });
+  }
+
+  getDirections() {
+    return this.request<SearchDirectionTaxonomy>("/api/search/directions");
   }
 
   listCandidates(): Promise<CandidateListItem[]> {
@@ -360,12 +388,7 @@ export class ApiClient implements RecruitmentApi {
     );
     if (!response.ok) throw new Error("导出失败");
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `match_${revisionId}.xlsx`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    await this.triggerDownload(blob, `match_${revisionId}.xlsx`);
   }
 
   health() {
@@ -538,6 +561,70 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
+  parseOrgImport(text: string) {
+    return this.request<OrgParseResult>("/api/org/import/parse", {
+      body: JSON.stringify({ text }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  parseOrgWord(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    return this.request<OrgParseResult>("/api/org/import/word", {
+      body: form,
+      method: "POST"
+    });
+  }
+
+  answerOrgImport(text: string, answers: string[]) {
+    return this.request<OrgParseResult>("/api/org/import/answer", {
+      body: JSON.stringify({ text, answers }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST"
+    });
+  }
+
+  commitOrgImport(companyId: string, draft: OrgImportDraft, sourceText?: string | null) {
+    return this.request<{ departments: number; employees: number }>(
+      "/api/org/import/commit",
+      {
+        body: JSON.stringify({ company_id: companyId, draft, source_text: sourceText ?? null }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  reviseOrgImport(draft: OrgImportDraft, instruction: string) {
+    return this.request<OrgImportDraft>(
+      "/api/org/import/revise",
+      {
+        body: JSON.stringify({ draft, instruction }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  getCompanySource(companyId: string) {
+    return this.request<{ company_id: string; source_text: string | null }>(
+      `/api/org/companies/${encodeURIComponent(companyId)}/source`
+    );
+  }
+
+  bindEmployee(employeeId: string, phone: string, name?: string | null) {
+    return this.request<BindEmployeeResult>(
+      `/api/org/employees/${encodeURIComponent(employeeId)}/bind`,
+      {
+        body: JSON.stringify({ phone, name }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
   searchBdLeads(query: string, limit = 10) {
     return this.request<BdLead[]>("/api/bd/search", {
       body: JSON.stringify({ query, limit }),
@@ -625,6 +712,13 @@ export class ApiClient implements RecruitmentApi {
         headers: { "Content-Type": "application/json" },
         method: "POST"
       }
+    );
+  }
+
+  lookupPool(leadId: string) {
+    return this.request<BdPoolCandidate[]>(
+      `/api/bd/leads/${encodeURIComponent(leadId)}/lookup-pool`,
+      { method: "POST" }
     );
   }
 
@@ -847,12 +941,7 @@ export class ApiClient implements RecruitmentApi {
       throw new Error("导出失败");
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `mapping_${snapshotId}.xlsx`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    await this.triggerDownload(blob, `mapping_${snapshotId}.xlsx`);
   }
 
   async exportMappingTreePdf(snapshotId: string) {
@@ -866,16 +955,15 @@ export class ApiClient implements RecruitmentApi {
       throw new Error("导出失败");
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `mapping_${snapshotId}.pdf`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    await this.triggerDownload(blob, `mapping_${snapshotId}.pdf`);
   }
 
   getSettings() {
     return this.request<AppSettings>("/api/settings");
+  }
+
+  getVendors() {
+    return this.request<VendorPreset[]>("/api/settings/vendors");
   }
 
   updateSettings(values: Partial<AppSettings>) {
@@ -884,6 +972,92 @@ export class ApiClient implements RecruitmentApi {
       headers: { "Content-Type": "application/json" },
       method: "PUT"
     });
+  }
+
+  testMail() {
+    return this.request<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } }>(
+      "/api/settings/mail/test",
+      { method: "POST" }
+    );
+  }
+
+  syncMail() {
+    return this.request<{ ingested: number; revision_ids: string[] }>(
+      "/api/settings/mail/sync",
+      { method: "POST" }
+    );
+  }
+
+  mailStatus() {
+    return this.request<{ configured: boolean; last_uid: number }>("/api/settings/mail/status");
+  }
+
+  getDirectionTaxonomy() {
+    return this.request<DirectionTaxonomy>("/api/directions/taxonomy");
+  }
+
+  getResumeDirectionProfile(revisionId: string) {
+    return this.request<DirectionProfileDetailResponse>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/direction-profile`
+    );
+  }
+
+  reevaluateResumeDirection(revisionId: string, expectedProfileVersion?: string) {
+    return this.request<DirectionEvaluationResponse>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/direction-profile/re-evaluate`,
+      {
+        body: JSON.stringify({ expected_profile_version: expectedProfileVersion ?? null }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  saveResumeDirectionProfile(revisionId: string, directionProfile: DirectionProfile, expectedProfileVersion?: string, reason?: string) {
+    return this.request<DirectionProfileResponse>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/direction-profile`,
+      {
+        body: JSON.stringify({
+          direction_profile: directionProfile,
+          reason: reason ?? null,
+          expected_profile_version: expectedProfileVersion ?? null
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
+    );
+  }
+
+  getJdDirectionProfile(revisionId: string) {
+    return this.request<DirectionProfileDetailResponse>(
+      `/api/jd/revisions/${encodeURIComponent(revisionId)}/direction-profile`
+    );
+  }
+
+  reevaluateJdDirection(revisionId: string, expectedProfileVersion?: string) {
+    return this.request<DirectionEvaluationResponse>(
+      `/api/jd/revisions/${encodeURIComponent(revisionId)}/direction-profile/re-evaluate`,
+      {
+        body: JSON.stringify({ expected_profile_version: expectedProfileVersion ?? null }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      }
+    );
+  }
+
+  saveJdDirectionProfile(revisionId: string, directionProfile: DirectionProfile, expectedProfileVersion?: string, reason?: string) {
+    return this.request<DirectionProfileResponse>(
+      `/api/jd/revisions/${encodeURIComponent(revisionId)}/direction-profile`,
+      {
+        body: JSON.stringify({
+          direction_profile: directionProfile,
+          reason: reason ?? null,
+          expected_profile_version: expectedProfileVersion ?? null
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT"
+      }
+    );
   }
 
   async exportMatchRun(runId: string) {
@@ -897,12 +1071,7 @@ export class ApiClient implements RecruitmentApi {
       throw new Error("导出失败");
     }
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `match_${runId}.xlsx`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    await this.triggerDownload(blob, `match_${runId}.xlsx`);
   }
 
   listBackups() {
@@ -980,20 +1149,13 @@ export class ApiClient implements RecruitmentApi {
     const response = await this.fetcher(`${this.baseUrl}${path}`, { headers });
     if (!response.ok) throw new Error("导出失败");
     const blob = await response.blob();
-    this.triggerDownload(blob, filename);
+    await this.triggerDownload(blob, filename);
   }
 
-  private triggerDownload(blob: Blob, filename: string) {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    // 用户选择「另存为」目录时原生对话框可能停留较久，blob URL 需在此期间保持有效，
-    // 过早 revoke 会导致浏览器报「无法下载，没有权限」。延长到 60 秒再释放。
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  private async triggerDownload(blob: Blob, filename: string) {
+    const buffer = await blob.arrayBuffer();
+    const content = Array.from(new Uint8Array(buffer));
+    await invoke("save_file", { filename, content });
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from kerui_recruit.direction.query_intent import detect
 from kerui_recruit.providers.contracts import EmbeddingProvider, RerankerProvider
 from kerui_recruit.search.contracts import (
     CandidateFilters,
@@ -10,6 +11,7 @@ from kerui_recruit.search.contracts import (
     SearchRequest,
 )
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex, SEARCH_DEADLINE
+from kerui_recruit.search.observer import SearchObserver
 from kerui_recruit.search.query import has_skill
 
 
@@ -98,7 +100,8 @@ class HybridSearchService:
         return self.index.is_ready()
 
     async def search(self, query: str, filters: CandidateFilters, *, limit: int,
-                     deadline: float | None = None) -> SearchPage:
+                     deadline: float | None = None,
+                     observer: SearchObserver | None = None) -> SearchPage:
         budget = min(deadline, time.monotonic() + self.search_timeout) if deadline is not None else time.monotonic() + self.search_timeout
         degraded: list[str] = []
         try:
@@ -117,9 +120,11 @@ class HybridSearchService:
                 reason = "EXCLUSION_UNVERIFIED" if filters.exclude_skills else "SEARCH_UNAVAILABLE"
                 return SearchPage(items=(), empty_reason="service_error", degraded_reasons=(reason,))
         elif hasattr(self.index, "search_fts") and hasattr(self.index, "fuse"):
-            hits = await self._parallel_retrieve(query, filters, limit, budget, degraded)
+            pool_limit = min(max(limit * 3, 100), 300)
+            hits = await self._parallel_retrieve(query, filters, pool_limit, budget, degraded, observer)
         else:
-            hits = await self._legacy_retrieve(query, filters, limit, budget, degraded)
+            pool_limit = min(max(limit * 3, 100), 300)
+            hits = await self._legacy_retrieve(query, filters, pool_limit, budget, degraded, observer)
 
         hits = await self._apply_exclusion(hits, filters.exclude_skills, budget, degraded)
         if not hits:
@@ -129,33 +134,57 @@ class HybridSearchService:
             if time.monotonic() < budget:
                 try:
                     contents = [hit.content for hit in hits[:100]]
+                    if observer is not None:
+                        _t = time.monotonic()
                     if hasattr(self.reranker_provider, "rerank_scored"):
                         scored = await self._provider(self.reranker_provider.rerank_scored, query, contents, deadline=budget)
                         hits = _apply_rerank_scored(hits, scored)
                     else:
                         order = await self._provider(self.reranker_provider.rerank, query, contents, deadline=budget)
                         hits = _apply_rerank_order(hits, order)
+                    if observer is not None:
+                        observer.record_phase("rerank", (time.monotonic() - _t) * 1000)
                 except Exception:
                     degraded.append("RERANKER_UNAVAILABLE")
             else:
                 degraded.append("TIMEOUT")
+            if observer is not None:
+                _t = time.monotonic()
+            hits = _apply_direction_boost(hits, detect(query))
+            if observer is not None:
+                observer.record_phase("direction_boost", (time.monotonic() - _t) * 1000)
         return SearchPage(items=tuple(hits[:limit]), degraded_reasons=tuple(dict.fromkeys(degraded)))
 
-    async def _parallel_retrieve(self, query, filters, limit, budget, degraded):
-        fts = asyncio.create_task(_blocking(self.index.search_fts, query, filters, max(limit, 100), deadline=budget))
+    async def _parallel_retrieve(self, query, filters, limit, budget, degraded, observer=None):
+        async def run_fts():
+            _t = time.monotonic()
+            try:
+                return await _blocking(self.index.search_fts, query, filters, max(limit, 100), deadline=budget)
+            finally:
+                if observer is not None:
+                    observer.record_phase("fts", (time.monotonic() - _t) * 1000)
 
         async def semantic():
+            _t_embed = time.monotonic()
             try:
                 vector = await self._provider(self.embedding_provider.embed_query, query, deadline=budget)
             except Exception:
                 degraded.append("EMBEDDING_UNAVAILABLE")
                 return []
+            finally:
+                if observer is not None:
+                    observer.record_phase("embedding", (time.monotonic() - _t_embed) * 1000)
+            _t_vector = time.monotonic()
             try:
                 return await _blocking(self.index.search_vector, tuple(vector), filters, max(limit, 100), deadline=budget)
             except Exception:
                 degraded.append("VECTOR_UNAVAILABLE")
                 return []
+            finally:
+                if observer is not None:
+                    observer.record_phase("vector", (time.monotonic() - _t_vector) * 1000)
 
+        fts = asyncio.create_task(run_fts())
         vector_task = asyncio.create_task(semantic())
         try:
             done, pending = await asyncio.wait({fts, vector_task}, timeout=max(0., budget - time.monotonic()))
@@ -172,13 +201,17 @@ class HybridSearchService:
                     task.cancel()
                     degraded.append(reason)
                     rows.append([])
-            return self.index.fuse(rows[0], rows[1], max(limit, 100))
+            _t_fuse = time.monotonic()
+            fused = self.index.fuse(rows[0], rows[1], max(limit, 100))
+            if observer is not None:
+                observer.record_phase("fusion", (time.monotonic() - _t_fuse) * 1000)
+            return fused
         finally:
             for task in (fts, vector_task):
                 if not task.done():
                     task.cancel()
 
-    async def _legacy_retrieve(self, query, filters, limit, budget, degraded):
+    async def _legacy_retrieve(self, query, filters, limit, budget, degraded, observer=None):
         vector = ()
         try:
             vector = tuple(await self._provider(self.embedding_provider.embed_query, query, deadline=budget))
@@ -272,3 +305,29 @@ def _with_rerank_score(hit, score: float):
     from dataclasses import replace
 
     return replace(hit, rerank_score=round(score, 6))
+
+
+def _apply_direction_boost(hits, intent, dir_weight: float = 0.12) -> list:
+    """方向软加权：基于归一化 rank score 与方向分融合后重排，不混合不可比原始分。"""
+    if not intent or not intent.matched or not intent.role_code:
+        return hits
+    n = len(hits)
+    if n == 0:
+        return hits
+
+    def direction_score(hit):
+        if hit.primary_role_family == intent.role_code:
+            return 1.0
+        if intent.role_code in (hit.role_family_codes or ()):
+            return 0.85
+        if hit.primary_role_family is None:
+            return 0.5
+        return 0.2
+
+    combined = []
+    for i, hit in enumerate(hits):
+        rank_score = 1.0 - (i / n)
+        score = rank_score * (1 - dir_weight) + direction_score(hit) * dir_weight
+        combined.append((score, hit))
+    combined.sort(key=lambda pair: -pair[0])
+    return [hit for _, hit in combined]

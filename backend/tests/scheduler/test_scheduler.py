@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.models import Blob, Candidate, Jd, JdRevision, ResumeDocument, ResumeRevision
+from kerui_recruit.direction.models import DirectionProfile, build_direction_label
 from kerui_recruit.match.jd_index import JdSearchIndex
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.match.service import MatchService
@@ -69,7 +70,13 @@ async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionma
             source_text="Java 3年",
             status="READY",
             is_current=True,
-            parsed_data={"summary": "Java 后端", "tech_direction": ["Java"]},
+            parsed_data={
+                "summary": "Java 后端",
+                "required_skills": ["Java"],
+                "direction_profile": DirectionProfile(status="CONFIDENT", role_families=[
+                        build_direction_label("BACKEND", source="USER", confidence=1.0, is_primary=True),
+                    ]).model_dump(mode="json"),
+            },
         )
         session.add(revision)
         session.commit()
@@ -81,7 +88,13 @@ async def test_reverse_match_candidate_finds_open_jds(session_factory: sessionma
         session.add(ResumeRevision(id="rev-1", document_id=document.id, blob_id=blob.id,
                                    content_sha256=blob.content_sha256, original_filename="resume.txt",
                                    status="READY", is_current=True, raw_text="Java 后端工程师",
-                                   parsed_data={"total_years": 4, "highest_degree": "BACHELOR", "location": "上海"}))
+                                   parsed_data={
+                                       "total_years": 4, "highest_degree": "BACHELOR", "location": "上海",
+                                       "skills": ["Java"],
+                                       "direction_profile": DirectionProfile(status="CONFIDENT", role_families=[
+                                           build_direction_label("BACKEND", source="USER", confidence=1.0, is_primary=True),
+                                       ]).model_dump(mode="json"),
+                                   }))
         session.commit()
 
     index = FakeIndex(

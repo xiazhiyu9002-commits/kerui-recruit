@@ -71,15 +71,16 @@ def test_desensitized_sample_end_to_end(client: TestClient) -> None:
     assert revisions.status_code == 200
     assert revisions.json()[0]["is_current"] is True
 
-    # 2. 去重：再次导入同一份原件，物理 Blob 复用
+    # 2. 去重：再次导入同一份原件，返回 ALREADY_IMPORTED 且不新建候选人
     again = client.post(
         "/api/resumes/import",
         files={"file": ("张三.pdf", pdf, "application/pdf")},
         headers=_headers(),
     )
     assert again.status_code == 202
-    assert again.json()["blob_id"] == first["blob_id"]
-    assert again.json()["candidate_id"] != first["candidate_id"]
+    assert again.json()["action"] == "ALREADY_IMPORTED"
+    assert again.json()["candidate_id"] == first["candidate_id"]
+    assert again.json()["revision_id"] == first["revision_id"]
 
     # 3. 搜索：解析后的候选人可被检索
     searched = client.post(

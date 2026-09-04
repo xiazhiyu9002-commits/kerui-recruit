@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
-from kerui_recruit.migration.service import MigrationReport
+from kerui_recruit.migration.service import MigrationError, MigrationReport
 
 router = APIRouter(prefix="/api/migration", tags=["migration"])
 
@@ -22,7 +23,10 @@ class MigrationResponse(BaseModel):
 @router.post("", response_model=MigrationResponse)
 def migrate_data(command: MigrateRequest, request: Request) -> MigrationResponse:
     services: AppServices = request.app.state.services
-    report: MigrationReport = services.migration_service.migrate_to(command.target_root)
+    try:
+        report: MigrationReport = services.migration_service.migrate_to(command.target_root)
+    except MigrationError as error:
+        raise ApiError(error.status_code, error.code, str(error)) from error
     return MigrationResponse(
         target_root=report.target_root,
         files_copied=report.files_copied,

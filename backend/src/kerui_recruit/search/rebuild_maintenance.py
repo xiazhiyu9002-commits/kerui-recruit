@@ -9,12 +9,15 @@ import argparse
 import asyncio
 from contextlib import closing
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
+import struct
 
 import httpx
+import lancedb
 from sqlalchemy import delete, select
 from sqlalchemy.orm import sessionmaker
 
@@ -26,8 +29,9 @@ from kerui_recruit.encryption.service import EncryptionService
 from kerui_recruit.match.jd_index import JdSearchIndex
 from kerui_recruit.providers.local import LocalHashEmbeddingProvider
 from kerui_recruit.providers.siliconflow import SiliconFlowEmbeddingProvider
+from kerui_recruit.search.contracts import SearchChunk
 from kerui_recruit.search.lancedb_index import LanceDBSearchIndex
-from kerui_recruit.search.sync import IndexSyncService, enqueue_sync
+from kerui_recruit.search.sync import IndexSyncService, _direction_fields, enqueue_sync
 
 
 def _readonly(database: Path) -> sqlite3.Connection:
@@ -40,7 +44,7 @@ def _readonly(database: Path) -> sqlite3.Connection:
 def _metadata(model: str, dimension: int) -> dict:
     if dimension < 1:
         raise ValueError("dimension must be positive")
-    return {"schema_version": "2", "embedding_model": model,
+    return {"schema_version": "3", "embedding_model": model,
             "vector_dimension": dimension, "chunk_version": "2"}
 
 
@@ -247,6 +251,307 @@ async def build_offline(database: Path, index_root: Path, output: Path, *,
     finally:
         if engine is not None:
             engine.dispose()
+
+
+def _direction_map(database: Path, kind: str) -> dict[str, dict]:
+    with closing(_readonly(database)) as source:
+        if kind == "candidate":
+            sql = ("SELECT d.candidate_id, r.parsed_data FROM resume_revision r "
+                   "JOIN resume_document d ON d.id = r.document_id "
+                   "WHERE r.is_current = 1 AND r.status = 'READY'")
+        else:
+            sql = "SELECT jd_id, parsed_data FROM jd_revision WHERE is_current = 1 AND status = 'READY'"
+        result: dict[str, dict] = {}
+        for key, parsed in source.execute(sql):
+            data = json.loads(parsed) if parsed else None
+            result[str(key)] = _direction_fields(data)
+        return result
+
+
+def _read_index_rows(root: Path) -> list[dict]:
+    if not root.is_dir():
+        return []
+    db = lancedb.connect(str(root))
+    if "candidate_chunks" not in db.list_tables().tables:
+        return []
+    table = db.open_table("candidate_chunks")
+    return table.search(None).limit(None).to_list()
+
+
+def _chunk_from_row(row: dict, direction: dict) -> SearchChunk:
+    return SearchChunk(
+        id=row["id"],
+        candidate_id=row["candidate_id"],
+        revision_id=row["revision_id"],
+        content=row["content"],
+        vector=tuple(float(v) for v in (row.get("vector") or [])),
+        total_years=row.get("total_years"),
+        highest_degree=row.get("highest_degree"),
+        location=row.get("location"),
+        candidate_status=row.get("candidate_status", "AVAILABLE"),
+        qs_rank=row.get("qs_rank"),
+        school_level=row.get("school_level"),
+        preferred_location=row.get("preferred_location"),
+        preferred_locations=tuple(row.get("preferred_locations") or ()),
+        primary_role_family=direction.get("primary_role_family"),
+        role_family_codes=tuple(direction.get("role_family_codes") or ()),
+        direction_confidence=direction.get("direction_confidence"),
+        direction_status=direction.get("direction_status"),
+        direction_source=direction.get("direction_source"),
+        business_domain_codes=tuple(direction.get("business_domain_codes") or ()),
+        leadership_code=direction.get("leadership_code"),
+        taxonomy_version=direction.get("taxonomy_version"),
+    )
+
+
+def _vector_checksum(rows: list[dict]) -> str:
+    digest = hashlib.sha256()
+    for row in sorted(rows, key=lambda r: str(r.get("id") or "")):
+        for value in (row.get("vector") or []):
+            digest.update(struct.pack(">f", float(value)))
+    return digest.hexdigest()
+
+
+def _sample_compare(source: list[dict], staged: list[dict], sample: int) -> dict:
+    staged_by_id = {str(r.get("id") or ""): r for r in staged}
+    compared = 0
+    mismatches = 0
+    for row in sorted(source, key=lambda r: str(r.get("id") or ""))[:sample]:
+        target = staged_by_id.get(str(row.get("id") or ""))
+        if target is None:
+            mismatches += 1
+            continue
+        a = [float(v) for v in (row.get("vector") or [])]
+        b = [float(v) for v in (target.get("vector") or [])]
+        if len(a) != len(b) or any(abs(x - y) > 1e-5 for x, y in zip(a, b)):
+            mismatches += 1
+        compared += 1
+    return {"sampled": compared, "mismatches": mismatches,
+            "all_match": mismatches == 0}
+
+
+def _direction_coverage(rows: list[dict]) -> dict:
+    total = len(rows)
+    with_status = sum(1 for r in rows if r.get("direction_status"))
+    return {"total_chunks": total, "chunks_with_direction_status": with_status,
+            "coverage": round(with_status / total, 6) if total else 0.0}
+
+
+def _db_projected_ids(database: Path) -> dict[str, set[str]]:
+    """计算数据库“应该投影”的实体 ID 集合，资格与 IndexSyncService._snapshot 完全一致。"""
+    with closing(_readonly(database)) as source:
+        candidate_rows = source.execute(
+            "SELECT DISTINCT d.candidate_id FROM resume_revision r "
+            "JOIN resume_document d ON d.id = r.document_id "
+            "JOIN candidate c ON c.id = d.candidate_id "
+            "WHERE r.is_current = 1 AND r.status = 'READY' "
+            "AND c.deleted_at IS NULL AND c.status NOT IN ('ARCHIVED', 'PENDING_REVIEW')"
+        ).fetchall()
+        jd_rows = source.execute(
+            "SELECT DISTINCT j.id FROM jd_revision r "
+            "JOIN jd j ON j.id = r.jd_id "
+            "WHERE r.is_current = 1 AND r.status = 'READY' "
+            "AND j.deleted_at IS NULL AND j.status = 'OPEN'"
+        ).fetchall()
+    return {
+        "candidate": {str(row[0]) for row in candidate_rows},
+        "jd": {str(row[0]) for row in jd_rows},
+    }
+
+
+def _validate_staging(database: Path, source_rows: dict[str, list[dict]],
+                      staged_rows: dict[str, list[dict]],
+                      vector_dimension: int) -> tuple[list[str], dict]:
+    """校验 staging 是否完整等价于源索引。返回 (失败项, 校验明细)。"""
+    failures: list[str] = []
+    checks: dict = {}
+    db_ids = _db_projected_ids(database)
+
+    for kind in ("candidate", "jd"):
+        src = source_rows[kind]
+        staged = staged_rows[kind]
+        source_entities = {str(r.get("candidate_id") or "") for r in src}
+        staged_entities = {str(r.get("candidate_id") or "") for r in staged}
+        checks[f"{kind}_entities"] = len(staged_entities)
+        checks[f"{kind}_chunks"] = len(staged)
+
+        chunks_match = len(staged) == len(src)
+        checks[f"{kind}_chunks_match"] = chunks_match
+        if not chunks_match:
+            failures.append(f"{kind} chunk 数不一致")
+
+        entities_match_source = staged_entities == source_entities
+        checks[f"{kind}_entities_match_source"] = entities_match_source
+        if not entities_match_source:
+            failures.append(f"{kind} entity 集合与源索引不一致")
+
+        entities_match_db = staged_entities == db_ids[kind]
+        checks[f"{kind}_entities_match_db"] = entities_match_db
+        if not entities_match_db:
+            failures.append(f"{kind} entity 集合与数据库应投影集合不一致")
+
+        bad_dimension = [r for r in staged if len(r.get("vector") or []) != vector_dimension]
+        checks[f"{kind}_vector_dimension_ok"] = not bad_dimension
+        if bad_dimension:
+            failures.append(f"{kind} 存在向量维度错误")
+
+        checksum_match = _vector_checksum(src) == _vector_checksum(staged)
+        checks[f"{kind}_vector_checksum_match"] = checksum_match
+        if not checksum_match:
+            failures.append(f"{kind} 向量 checksum 不一致")
+
+        sampled = _sample_compare(src, staged, min(20, len(src)))
+        checks[f"{kind}_sampled_vector_compare"] = sampled
+        if not sampled["all_match"]:
+            failures.append(f"{kind} 抽样逐元素比较不一致")
+
+        source_by_id = {str(r.get("id") or ""): r for r in src}
+        mismatched = 0
+        for row in staged:
+            ref = source_by_id.get(str(row.get("id") or ""))
+            if ref is None or (
+                str(ref.get("candidate_id") or "") != str(row.get("candidate_id") or "")
+                or str(ref.get("revision_id") or "") != str(row.get("revision_id") or "")
+                or ref.get("content") != row.get("content")
+            ):
+                mismatched += 1
+        checks[f"{kind}_chunk_correspondence"] = mismatched == 0
+        if mismatched:
+            failures.append(f"{kind} chunk 对应关系不一致")
+
+        coverage = _direction_coverage(staged)
+        checks[f"{kind}_direction_coverage"] = coverage
+        if coverage["total_chunks"] and coverage["coverage"] < 1.0:
+            failures.append(f"{kind} direction status 未全覆盖")
+
+    return failures, checks
+
+
+def _verify_metadata(expected: dict, roots: dict[str, Path]) -> tuple[list[str], dict]:
+    """真实读取并校验各索引的 metadata（embedding model / dimension / chunk version）。"""
+    failures: list[str] = []
+    checks: dict = {}
+    for label, root in roots.items():
+        inspected = _inspect_metadata(root, expected)
+        checks[f"{label}_metadata"] = inspected
+        # 空索引（无 metadata 文件）视为合法；只有不匹配或损坏才失败。
+        if inspected["compatibility"] not in (
+            "metadata-matches-physical-schema-not-checked", "missing-metadata-or-empty"):
+            failures.append(f"{label} metadata 不兼容: {inspected['compatibility']}")
+    return failures, checks
+
+
+def migrate_reusing_vectors(
+    database: Path,
+    source_index_root: Path,
+    staging_index_root: Path,
+    *,
+    embedding_model: str,
+    vector_dimension: int,
+    app_stopped: bool = False,
+) -> dict:
+    """复用旧索引向量，仅补齐/刷新方向元数据，写入独立 staging 目录。"""
+    if not app_stopped:
+        raise ValueError("Application must be stopped through migration and manual switch")
+    database = database.expanduser().resolve(strict=True)
+    source_index_root = source_index_root.expanduser().resolve(strict=True)
+    staging_index_root = staging_index_root.expanduser().resolve()
+    if (staging_index_root == source_index_root
+            or staging_index_root.is_relative_to(source_index_root)
+            or source_index_root.is_relative_to(staging_index_root)):
+        raise ValueError("Staging path must not overlap the source index")
+    if staging_index_root.exists():
+        raise ValueError("Staging directory already exists")
+
+    expected = _metadata(embedding_model, vector_dimension)
+    for kind, root in (("candidate", source_index_root), ("jd", source_index_root / "jobs")):
+        inspected = _inspect_metadata(root, expected)
+        if inspected["compatibility"] != "metadata-matches-physical-schema-not-checked":
+            raise ValueError(f"{kind} source index metadata incompatible: {inspected['compatibility']}")
+
+    candidate_direction = _direction_map(database, "candidate")
+    jd_direction = _direction_map(database, "jd")
+    candidate_rows = _read_index_rows(source_index_root)
+    jd_rows = _read_index_rows(source_index_root / "jobs")
+
+    staging_index_root.mkdir(parents=True, exist_ok=False)
+    candidate_index = LanceDBSearchIndex(staging_index_root, vector_dimension=vector_dimension,
+                                          embedding_model=embedding_model, chunk_version="2")
+    jobs = JdSearchIndex(staging_index_root / "jobs", vector_dimension=vector_dimension,
+                          embedding_model=embedding_model, chunk_version="2")
+
+    candidate_index.upsert([
+        _chunk_from_row(r, candidate_direction.get(str(r.get("candidate_id") or ""), {}))
+        for r in candidate_rows
+    ])
+    candidate_index.optimize_pending()
+    jobs.index.upsert([
+        _chunk_from_row(r, jd_direction.get(str(r.get("candidate_id") or ""), {}))
+        for r in jd_rows
+    ])
+    jobs.index.optimize_pending()
+
+    staged_candidate_rows = _read_index_rows(staging_index_root)
+    staged_jd_rows = _read_index_rows(staging_index_root / "jobs")
+
+    failures, validated = _validate_staging(
+        database,
+        {"candidate": candidate_rows, "jd": jd_rows},
+        {"candidate": staged_candidate_rows, "jd": staged_jd_rows},
+        vector_dimension,
+    )
+    # 兼容既有字段名：candidate 侧沿用 sampled_vector_compare / direction_coverage。
+    validated["sampled_vector_compare"] = validated["candidate_sampled_vector_compare"]
+    validated["direction_coverage"] = validated["candidate_direction_coverage"]
+
+    status = "READY_FOR_OFFLINE_SWITCH" if not failures else "FAILED_VALIDATION"
+    manifest = {
+        "status": status,
+        "source_database": str(database),
+        "source_index": str(source_index_root),
+        "staging_index": str(staging_index_root),
+        "embedding_model": embedding_model,
+        "vector_dimension": vector_dimension,
+        "reused_vectors": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "validated": validated,
+        "failures": failures,
+        "instruction": "Keep application stopped. Preserve the old search directory; "
+                       "move the staged search directory into place, then restart.",
+    }
+    _manifest(staging_index_root, manifest)
+    if failures:
+        raise ValueError(f"Staged index validation failed: {', '.join(failures)}")
+    return manifest
+
+
+def validate_index(database: Path, source_index_root: Path, staging_index_root: Path,
+                   *, embedding_model: str, vector_dimension: int) -> dict:
+    candidate_rows = _read_index_rows(source_index_root)
+    jd_rows = _read_index_rows(source_index_root / "jobs")
+    staged_candidate_rows = _read_index_rows(staging_index_root)
+    staged_jd_rows = _read_index_rows(staging_index_root / "jobs")
+    failures, checks = _validate_staging(
+        database,
+        {"candidate": candidate_rows, "jd": jd_rows},
+        {"candidate": staged_candidate_rows, "jd": staged_jd_rows},
+        vector_dimension,
+    )
+    expected = _metadata(embedding_model, vector_dimension)
+    metadata_failures, metadata_checks = _verify_metadata(expected, {
+        "source_candidate": source_index_root,
+        "source_jd": source_index_root / "jobs",
+        "staging_candidate": staging_index_root,
+        "staging_jd": staging_index_root / "jobs",
+    })
+    failures.extend(metadata_failures)
+    checks.update(metadata_checks)
+    checks["sampled_vector_compare"] = checks["candidate_sampled_vector_compare"]
+    checks["direction_coverage"] = checks["candidate_direction_coverage"]
+    checks["target_metadata"] = expected
+    checks["failures"] = failures
+    checks["status"] = "VALIDATED" if not failures else "FAILED_VALIDATION"
+    return checks
 
 
 def main(arguments: list[str] | None = None) -> int:

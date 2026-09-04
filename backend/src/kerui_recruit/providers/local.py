@@ -85,7 +85,7 @@ class LocalResumeParser:
         total_years = _extract_experience_years(compact)
         degree = None
         for token, normalized in (
-            ("博士", "DOCTOR"), ("PhD", "DOCTOR"),
+            ("博士", "DOCTORATE"), ("PhD", "DOCTORATE"),
             ("硕士", "MASTER"), ("Master", "MASTER"),
             ("本科", "BACHELOR"), ("Bachelor", "BACHELOR"),
             ("大专", "ASSOCIATE"),

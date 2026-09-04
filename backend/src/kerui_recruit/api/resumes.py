@@ -26,6 +26,7 @@ from kerui_recruit.resumes.ingest import IngestResume, ResumeIngestService
 from kerui_recruit.resumes.extract import LegacyDocConversionError, convert_doc_to_pdf
 from kerui_recruit.resumes.pipeline import build_chunk_contents_from_dict
 from kerui_recruit.resumes.normalize import normalize_resume
+from kerui_recruit.duplicates.service import normalize_email, normalize_phone
 from kerui_recruit.resumes.structured import ParsedResume
 from kerui_recruit.resumes.validity import check_parsed_resume
 from kerui_recruit.search.sync import enqueue_sync
@@ -37,11 +38,15 @@ router = APIRouter(prefix="/api/resumes", tags=["resumes"])
 
 
 class ImportResumeResponse(BaseModel):
-    candidate_id: str
-    document_id: str
-    revision_id: str
-    blob_id: str
-    task_id: str
+    action: str
+    candidate_id: str | None
+    document_id: str | None
+    revision_id: str | None
+    blob_id: str | None
+    task_id: str | None
+    message: str = ""
+    conflict_candidate_ids: list[str] = Field(default_factory=list)
+    created_task: bool = False
 
 
 class ImportFolderRequest(BaseModel):
@@ -104,7 +109,12 @@ def import_folder(command: ImportFolderRequest, request: Request) -> ImportFolde
                         passive_match=(index == 0),
                     )
                 )
-            imported.append(ImportResumeResponse(**asdict(result)))
+            if result.action == "ALREADY_IMPORTED":
+                skipped.append(path.name)
+            elif result.action == "DUPLICATE_CONFLICT":
+                errors.append(f"{path.name}: 相同文件已关联到多个候选人")
+            else:
+                imported.append(ImportResumeResponse(**asdict(result)))
         except Exception as exc:  # noqa: BLE001 - report per-file failures
             errors.append(f"{path.name}: {exc}")
     return ImportFolderResponse(imported=imported, skipped=skipped, errors=errors)
@@ -342,7 +352,7 @@ def get_resume_review(revision_id: str, request: Request) -> dict:
 @router.post("/revisions/{revision_id}/review")
 async def approve_resume_review(revision_id: str, command: ResumeReviewRequest, request: Request) -> dict:
     services: AppServices = request.app.state.services
-    unknown = set(command.fields) - set(ParsedResume.model_fields) - {"age"}
+    unknown = set(command.fields) - set(ParsedResume.model_fields) - {"age", "direction_profile", "direction_diagnostics"}
     if unknown:
         raise ApiError(422, "E_INVALID_RESUME_FIELD", "包含不支持的简历字段")
     with services.session_factory() as session, session.begin():
@@ -502,6 +512,8 @@ def update_candidate_contact(
         contact.phone_encrypted = encryption.encrypt(command.phone) if command.phone else None
         contact.email_confidence = 1.0 if command.email else None
         contact.phone_confidence = 1.0 if command.phone else None
+        contact.email_fingerprint = normalize_email(command.email)
+        contact.phone_fingerprint = normalize_phone(command.phone)
         contact.manual_fields = ["email", "phone"]
         session.flush()
         return CandidateContactResponse(
@@ -672,9 +684,11 @@ async def update_candidate_field(
             if field == "phone":
                 contact.phone_encrypted = encryption.encrypt(value) if value else None
                 contact.phone_confidence = 1.0 if value else None
+                contact.phone_fingerprint = normalize_phone(value)
             else:
                 contact.email_encrypted = encryption.encrypt(value) if value else None
                 contact.email_confidence = 1.0 if value else None
+                contact.email_fingerprint = normalize_email(value)
             contact.manual_fields = sorted(set(contact.manual_fields or []) | {field})
             session.flush()
         return {"candidate_id": candidate_id, "field": field, "value": value}

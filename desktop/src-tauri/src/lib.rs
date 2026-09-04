@@ -243,6 +243,33 @@ fn set_data_root(path: String) -> Result<String, String> {
     Ok(target.to_string_lossy().into_owned())
 }
 
+/// Open a user-provided URL in the system browser. Only `http`/`https` are
+/// allowed; anything else (e.g. `file:`, `javascript:`) is rejected to keep
+/// the WebView from navigating to privileged or scriptable schemes.
+#[tauri::command]
+fn open_external(url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|_| "非法链接".to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return Err("仅支持 http/https 链接".to_string()),
+    }
+    open::that(parsed.as_str()).map_err(|error| error.to_string())
+}
+
+/// Save binary content to a user-chosen location via a native file dialog.
+/// Returns the chosen path, or `None` if the user cancelled the dialog.
+#[tauri::command]
+fn save_file(filename: String, content: Vec<u8>) -> Result<Option<String>, String> {
+    let path = rfd::FileDialog::new().set_file_name(&filename).save_file();
+    match path {
+        Some(target) => {
+            std::fs::write(&target, &content).map_err(|error| error.to_string())?;
+            Ok(Some(target.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let Some(icon) = app.default_window_icon() else {
         return Ok(());
@@ -297,7 +324,7 @@ pub fn run() {
             create_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root])
+        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root, open_external, save_file])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the window minimizes to the system tray instead of

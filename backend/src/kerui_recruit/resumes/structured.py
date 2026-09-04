@@ -89,3 +89,24 @@ class NormalizedResume(BaseModel):
 
 class ResumeParser(Protocol):
     async def parse_resume(self, text: str) -> ParsedResume: ...
+
+
+def build_direction_input(resume: NormalizedResume):
+    """从标准化简历构建方向分类输入（仅结构化字段，不含全文与联系方式）。"""
+    from kerui_recruit.direction.classifier import DirectionClassificationInput
+
+    experiences = resume.experiences or ()
+    recent = experiences[0] if experiences else None
+    return DirectionClassificationInput(
+        recent_title=(recent.title or "") if recent else "",
+        recent_duties=(recent.summary or "") if recent else (resume.summary or ""),
+        history_titles=tuple(e.title for e in experiences[1:] if e.title),
+        project_summaries=tuple(_project_text(p) for p in (resume.projects or ())),
+        skills=resume.skills,
+        industry=resume.current_industry or resume.industry or "",
+        business_scene=" ".join(p.business_scene for p in (resume.projects or ()) if p.business_scene),
+    )
+
+
+def _project_text(project: NormalizedProject) -> str:
+    return " ".join(x for x in (project.name, project.tech_stack, project.business_scene, project.summary) if x)

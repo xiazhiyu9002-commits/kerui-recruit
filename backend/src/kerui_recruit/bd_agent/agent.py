@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.bd_agent.evidence import EvidenceDoc, EvidenceExtractor, RankedChunk
@@ -12,6 +13,27 @@ from kerui_recruit.bd_agent.synthesis import SynthesisGenerator, SynthesisResult
 from kerui_recruit.bd_search.service import BdSearchService, WebSearchProvider
 from kerui_recruit.db.models import BdEvidence, BdLead, BdSearchSession
 from kerui_recruit.encryption.service import EncryptionService
+
+
+_COMPANY_SUFFIXES = (
+    "股份有限公司",
+    "有限责任公司",
+    "有限公司",
+    "股份公司",
+    "集团公司",
+    "集团",
+    "研究院",
+)
+
+
+def _normalize_company(company: str) -> str:
+    """Strip common legal suffixes and case-fold for dedup comparison."""
+    text = company.strip().casefold()
+    for suffix in _COMPANY_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+    return text.strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +60,7 @@ class BdAgent:
         fallback: BdSearchService | None = None,
         max_rounds: int = 3,
         max_queries: int = 8,
+        min_trusted_leads: int = 5,
     ) -> None:
         self.session_factory = session_factory
         self.search_provider = search_provider
@@ -49,6 +72,7 @@ class BdAgent:
         self.fallback = fallback
         self.max_rounds = max_rounds
         self.max_queries = max_queries
+        self.min_trusted_leads = min_trusted_leads
 
     async def run(
         self,
@@ -97,7 +121,9 @@ class BdAgent:
         queries = await self.planner.plan(query)  # type: ignore[union-attr]
         await self._emit(progress, "planned", f"规划出 {len(queries)} 条搜索式")
         seen_queries: set[str] = set()
+        seen_leads: set[str] = self._load_seen_leads(session_id)
         docs_by_url: dict[str, EvidenceDoc] = {}
+        accumulated: list[BdLead] = []
 
         for _round in range(self.max_rounds):
             await self._emit(progress, "searching", f"第 {_round + 1} 轮搜索中…")
@@ -109,16 +135,30 @@ class BdAgent:
             chunks = await self.evidence_extractor.extract(query, list(docs_by_url.values()))
             await self._emit(progress, "ranking", f"重排出 {len(chunks)} 个证据片段")
             synthesis = await self.synthesizer.synthesize(query, chunks)  # type: ignore[union-attr]
-            await self._emit(progress, "synthesized", f"综合出 {len(synthesis.leads)} 条线索")
-            leads = self._persist(session_id, query, synthesis)
 
-            if not self._should_continue(synthesis, _round, queries):
+            # 跨轮去重：同一「公司+岗位」只保留首次命中，保证统计的是去重后的可信结果。
+            fresh = [
+                item
+                for item in synthesis.leads
+                if self._dedup_key(item.company, item.job_title) not in seen_leads
+            ]
+            for item in fresh:
+                seen_leads.add(self._dedup_key(item.company, item.job_title))
+            synthesis.leads = fresh
+            await self._emit(progress, "synthesized", f"综合出 {len(fresh)} 条线索")
+
+            leads = self._persist(session_id, query, synthesis)
+            accumulated.extend(leads)
+
+            if not self._should_continue(synthesis, _round, queries, accumulated):
                 await self._emit(progress, "done", "完成")
-                return AgentResult(session_id=session_id, leads=leads)
+                return AgentResult(
+                    session_id=session_id, leads=self._rank(accumulated, limit)
+                )
             queries = synthesis.follow_up_queries or []
 
         await self._emit(progress, "done", "完成")
-        return AgentResult(session_id=session_id, leads=[])
+        return AgentResult(session_id=session_id, leads=self._rank(accumulated, limit))
 
     async def _search_and_fetch(
         self,
@@ -149,17 +189,61 @@ class BdAgent:
                 )
         return docs
 
+    def _load_seen_leads(self, session_id: str) -> set[str]:
+        """同一会话内已持久化的去重键，跨轮、跨追问复用，避免重复出现。
+
+        从 ``synthesized_json``（明文）读取公司与岗位，与 ``_persist`` 加密前的
+        内容一致，因此无需额外解密即可还原去重键。
+        """
+        keys: set[str] = set()
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(BdLead.synthesized_json).where(BdLead.session_id == session_id)
+            ).all()
+        for (synthesized,) in rows:
+            if not synthesized:
+                continue
+            company = synthesized.get("company")
+            job_title = synthesized.get("job_title")
+            if company or job_title:
+                keys.add(self._dedup_key(company, job_title))
+        return keys
+
     def _should_continue(
         self,
         synthesis: SynthesisResult,
         round_index: int,
         queries: list[str],
+        accumulated: list[BdLead],
     ) -> bool:
         if round_index >= self.max_rounds - 1:
             return False
-        if not synthesis.needs_more_search:
+        trusted = sum(1 for lead in accumulated if self._is_trusted(lead))
+        if trusted >= self.min_trusted_leads:
+            return False
+        if not synthesis.needs_more_search and not synthesis.follow_up_queries:
             return False
         return bool(synthesis.follow_up_queries)
+
+    @staticmethod
+    def _dedup_key(company: str | None, job_title: str | None) -> str:
+        company = _normalize_company(company or "")
+        job = (job_title or "").strip().casefold()
+        return f"{company}\u0000{job}"
+
+    @staticmethod
+    def _is_trusted(lead: BdLead) -> bool:
+        return lead.confidence is None or lead.confidence >= 0.6
+
+    @staticmethod
+    def _rank(leads: list[BdLead], limit: int) -> list[BdLead]:
+        def sort_key(lead: BdLead):
+            confidence = lead.confidence if lead.confidence is not None else -1.0
+            evidence_count = len(lead.evidence) if lead.evidence else 0
+            has_posted = 1 if lead.posted_time else 0
+            return (confidence, evidence_count, has_posted)
+
+        return sorted(leads, key=sort_key, reverse=True)[:limit]
 
     def _persist(
         self,

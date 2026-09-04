@@ -148,3 +148,21 @@ def test_list_returns_tasks_newest_first(tmp_path: Path) -> None:
     tasks = repo.list()
 
     assert [task.id for task in tasks] == [second, first]
+
+
+def test_list_by_ids_returns_tasks_beyond_recent_limit(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    ids = [
+        repo.enqueue(
+            TaskSpec("PARSE_RESUME", "batch", 10, {"revision_id": str(i)}, f"parse:{i}")
+        )
+        for i in range(250)
+    ]
+
+    # The oldest task falls outside the default 100-item list window.
+    recent_ids = {task.id for task in repo.list(limit=100)}
+    assert ids[0] not in recent_ids
+
+    found = repo.list_by_ids([ids[0], ids[-1], "missing-id"])
+    assert {task.id for task in found} == {ids[0], ids[-1]}
+    assert repo.list_by_ids([]) == []

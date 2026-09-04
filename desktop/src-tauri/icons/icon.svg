@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- 深绿底 -->
+  <rect width="512" height="512" rx="112" fill="#10271f"/>
+  <!-- 亮绿 K：左侧竖臂 + 中间分叉的两条斜臂 -->
+  <g fill="#3ddc97">
+    <rect x="112" y="96" width="88" height="320" rx="20"/>
+    <path d="M200 256 L360 96 L448 96 L296 256 L448 416 L360 416 Z"/>
+  </g>
+</svg>

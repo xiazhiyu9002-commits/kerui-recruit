@@ -8,7 +8,9 @@ from sqlalchemy import select
 
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.db.models import Candidate, CandidateContact, IndexSyncRecord, ResumeDocument, ResumeRevision
-from kerui_recruit.search.contracts import CandidateFilters
+from kerui_recruit.direction.taxonomy import BUSINESS_DOMAIN_LABELS, ROLE_FAMILIES
+from kerui_recruit.search.contracts import CandidateFilters, resolve_search_status
+from kerui_recruit.search.degrees import normalize_degree
 from kerui_recruit.search.query import has_skill, parse_query
 from kerui_recruit.search.service import _blocking
 
@@ -29,6 +31,9 @@ class CandidateFiltersRequest(BaseModel):
     max_qs_rank: int | None = Field(default=None, ge=1)
     school_level: str | None = None
     exclude_skills: list[str] = Field(default_factory=list)
+    primary_role_family: str | None = None
+    role_families: list[str] = Field(default_factory=list)
+    business_domains: list[str] = Field(default_factory=list)
 
 
 class CandidateSearchRequest(BaseModel):
@@ -58,6 +63,15 @@ class CandidateSearchResponse(BaseModel):
     items: list[CandidateSearchItem]
     degraded_reasons: list[str]
     empty_reason: str | None = None
+    status: str = "success"
+
+
+@router.get("/directions")
+def list_directions() -> dict:
+    return {
+        "role_families": [{"code": rf.code, "label": rf.label} for rf in ROLE_FAMILIES],
+        "business_domains": [{"code": code, "label": label} for code, label in BUSINESS_DOMAIN_LABELS.items()],
+    }
 
 
 @router.post("/candidates", response_model=CandidateSearchResponse)
@@ -76,15 +90,23 @@ async def search_candidates(
         deadline=deadline - min(.25, remaining * .1),
     )
     if not page.items:
-        return CandidateSearchResponse(items=[], degraded_reasons=list(page.degraded_reasons), empty_reason=page.empty_reason)
+        return CandidateSearchResponse(
+            items=[], degraded_reasons=list(page.degraded_reasons), empty_reason=page.empty_reason,
+            status=resolve_search_status((), page.empty_reason, page.degraded_reasons),
+        )
     try:
         items, validation_reasons = await _blocking(_hydrate_hits, services, page.items, parsed.keywords, filters, deadline=deadline)
     except Exception:
-        return CandidateSearchResponse(items=[], degraded_reasons=list(page.degraded_reasons) + ["LIVE_VALIDATION_UNAVAILABLE"],
-                                       empty_reason="service_error")
+        return CandidateSearchResponse(
+            items=[], degraded_reasons=list(page.degraded_reasons) + ["LIVE_VALIDATION_UNAVAILABLE"],
+            empty_reason="service_error", status="service_error",
+        )
     degraded = list(dict.fromkeys((*page.degraded_reasons, *validation_reasons)))
-    return CandidateSearchResponse(items=items, degraded_reasons=degraded,
-                                   empty_reason=page.empty_reason if items else ("service_error" if degraded else "no_match"))
+    empty_reason = page.empty_reason if items else ("service_error" if degraded else "no_match")
+    return CandidateSearchResponse(
+        items=items, degraded_reasons=degraded, empty_reason=empty_reason,
+        status=resolve_search_status(items, empty_reason, degraded),
+    )
 
 
 def _hydrate_hits(services, hits, query, filters):
@@ -93,6 +115,7 @@ def _hydrate_hits(services, hits, query, filters):
     degraded = []
     seen_sha: set[str] = set()
     seen_candidates: set[str] = set()
+    seen_identity: set[tuple[str, str]] = set()
     with services.session_factory() as session:
         pending = set(session.scalars(select(IndexSyncRecord.entity_id).where(
             IndexSyncRecord.entity_type == "candidate",
@@ -134,6 +157,14 @@ def _hydrate_hits(services, hits, query, filters):
             candidate, revision, contact = record
             if filters.candidate_status and candidate.status != filters.candidate_status:
                 continue
+            identity_keys = [
+                ("phone", contact.phone_fingerprint) if contact and contact.phone_fingerprint else None,
+                ("email", contact.email_fingerprint) if contact and contact.email_fingerprint else None,
+            ]
+            identity_keys = [key for key in identity_keys if key]
+            if any(key in seen_identity for key in identity_keys):
+                continue
+            seen_identity.update(identity_keys)
             sha = revision.content_sha256
             if sha and sha in seen_sha:
                 continue
@@ -182,8 +213,14 @@ def _merge_filters(parsed: CandidateFilters, explicit: CandidateFiltersRequest |
     for single, multiple in (("location", "locations"), ("preferred_location", "preferred_locations")):
         if single in overrides or multiple in overrides:
             merged[single], merged[multiple] = None, ()
+    if "highest_degree" in overrides and overrides["highest_degree"]:
+        overrides["highest_degree"] = normalize_degree(overrides["highest_degree"])
     if "highest_degree" in overrides and "degree_exact" not in overrides:
         merged["degree_exact"] = False
+    if "role_families" in overrides:
+        overrides["role_family_codes"] = tuple(overrides.pop("role_families") or ())
+    if "business_domains" in overrides:
+        overrides["business_domain_codes"] = tuple(overrides.pop("business_domains") or ())
     merged.update(overrides)
     for key in ("locations", "preferred_locations", "exclude_skills"):
         merged[key] = tuple(merged[key] or ())
