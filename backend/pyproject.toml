@@ -39,6 +39,7 @@ packages = ["src/kerui_recruit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra -m 'not performance'"
 markers = [
   "performance: slow, scaled acceptance benchmarks for the Phase 0 gate",
