@@ -585,6 +585,8 @@ class MailCursor(IdMixin, Base):
 
     mailbox: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     last_uid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # IMAP UIDVALIDITY：服务商重排 UID 时会变化，用于检测旧游标是否失效。
+    uidvalidity: Mapped[int | None] = mapped_column(Integer)
 
 
 class Reminder(IdMixin, Base):

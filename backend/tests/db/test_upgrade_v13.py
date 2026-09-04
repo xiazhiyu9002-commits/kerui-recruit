@@ -35,7 +35,7 @@ def test_v12_to_v13_adds_direction_and_mode_columns(tmp_path: Path) -> None:
     assert "requested_mode" in {c["name"] for c in inspector.get_columns("index_sync")}
     with engine.connect() as db:
         versions = db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all()
-    assert versions == [12, 13]
+    assert versions == [12, 13, 14]
 
 
 def test_v13_upgrade_is_idempotent(tmp_path: Path) -> None:
@@ -47,3 +47,25 @@ def test_v13_upgrade_is_idempotent(tmp_path: Path) -> None:
     inspector = inspect(engine)
     assert {"review_data", "manual_overrides"} <= {c["name"] for c in inspector.get_columns("jd_revision")}
     assert "requested_mode" in {c["name"] for c in inspector.get_columns("index_sync")}
+
+
+def _v13_database(path: Path) -> None:
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at DATETIME);
+            CREATE TABLE mail_cursor (id VARCHAR(36) PRIMARY KEY, mailbox VARCHAR(200) UNIQUE,
+                last_uid INTEGER NOT NULL, created_at DATETIME, updated_at DATETIME);
+        """)
+        db.execute("INSERT INTO schema_version VALUES (13, '2026-01-01')")
+
+
+def test_v13_to_v14_adds_mail_cursor_uidvalidity(tmp_path: Path) -> None:
+    path = tmp_path / "recruit.sqlite3"
+    _v13_database(path)
+    engine = create_engine_for(path)
+    migrate(engine)
+    inspector = inspect(engine)
+    assert "uidvalidity" in {c["name"] for c in inspector.get_columns("mail_cursor")}
+    with engine.connect() as db:
+        versions = db.exec_driver_sql("SELECT version FROM schema_version ORDER BY version").scalars().all()
+    assert versions == [13, 14]

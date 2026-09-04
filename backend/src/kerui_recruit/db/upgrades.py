@@ -221,6 +221,11 @@ def _upgrade_v12_to_v13(connection: Connection) -> None:
     _add_column(connection, "index_sync", "requested_mode", "VARCHAR(16) NOT NULL DEFAULT 'FULL'")
 
 
+def _upgrade_v13_to_v14(connection: Connection) -> None:
+    """邮件游标记录 IMAP UIDVALIDITY，用于检测 QQ 等邮箱删除邮件后的 UID 重排。"""
+    _add_column(connection, "mail_cursor", "uidvalidity", "INTEGER")
+
+
 DEFAULT_UPGRADES = (
     Upgrade(1, 2, _upgrade_v1_to_v2),
     Upgrade(2, 3, _upgrade_v2_to_v3),
@@ -234,4 +239,5 @@ DEFAULT_UPGRADES = (
     Upgrade(10, 11, _upgrade_v10_to_v11),
     Upgrade(11, 12, _upgrade_v11_to_v12),
     Upgrade(12, 13, _upgrade_v12_to_v13),
+    Upgrade(13, 14, _upgrade_v13_to_v14),
 )

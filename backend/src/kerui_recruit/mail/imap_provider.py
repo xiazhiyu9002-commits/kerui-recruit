@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import re
 from email.header import decode_header, make_header
 from email.message import Message
 from typing import Iterable
@@ -68,6 +69,20 @@ class ImapLibProvider(ImapProvider):
     def mark_read(self, uid: int) -> None:
         assert self._client is not None
         self._client.uid("store", str(uid).encode(), "+FLAGS", r"(\Seen)")
+
+    def uidvalidity(self) -> int | None:
+        """Return the mailbox UIDVALIDITY, or None when the server omits it.
+
+        Some providers (e.g. QQ Mail) renumber UIDs after deletion; the
+        UIDVALIDITY token changes then, letting callers detect stale cursors.
+        """
+        assert self._client is not None
+        for item in self._client.response("UIDVALIDITY") or ():
+            text = item.decode("utf-8", "replace") if isinstance(item, bytes) else str(item)
+            match = re.search(r"UIDVALIDITY\s+(\d+)", text)
+            if match:
+                return int(match.group(1))
+        return None
 
 
 def _first_bytes(data: Iterable[object]) -> bytes | None:

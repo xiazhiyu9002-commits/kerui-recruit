@@ -10,7 +10,7 @@ from kerui_recruit.db.base import Base
 from kerui_recruit.db import models as _models
 from kerui_recruit.db.upgrades import DEFAULT_UPGRADES, Upgrade
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 def migrate(

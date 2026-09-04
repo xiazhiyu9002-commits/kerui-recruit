@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.db.migrate import migrate
+from kerui_recruit.db.models import MailCursor
 from kerui_recruit.db.session import create_engine_for
 from kerui_recruit.mail.ingest import MailIngestService
 from kerui_recruit.mail.service import ImapProvider, MailAttachment, MailMessage, MailService
@@ -11,11 +12,17 @@ from kerui_recruit.storage.blobs import BlobStore
 
 
 class FakeImap(ImapProvider):
-    def __init__(self, messages: list[MailMessage] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[MailMessage] | None = None,
+        *,
+        uidvalidity: int | None = None,
+    ) -> None:
         self.messages = messages or []
         self.marked_read: list[int] = []
         self.connect_count = 0
         self.disconnect_count = 0
+        self._uidvalidity = uidvalidity
 
     def connect(self) -> None:
         self.connect_count += 1
@@ -28,6 +35,9 @@ class FakeImap(ImapProvider):
 
     def mark_read(self, uid: int) -> None:
         self.marked_read.append(uid)
+
+    def uidvalidity(self) -> int | None:
+        return self._uidvalidity
 
 
 @pytest.fixture
@@ -56,6 +66,52 @@ def test_sync_mailbox_fetches_and_updates_cursor(
     # Second sync should fetch nothing (cursor advanced past uid=2)
     result2 = service.sync_mailbox("INBOX")
     assert len(result2) == 0
+
+
+def test_sync_mailbox_resets_cursor_on_uidvalidity_change(
+    session_factory: sessionmaker[Session],
+) -> None:
+    # 第一次同步：记录 uidvalidity=100，游标推进到 uid=2。
+    first = FakeImap(
+        messages=[
+            MailMessage(uid=1, subject="简历A", sender="hr@test.com", body="...", date="2026-01-01"),
+            MailMessage(uid=2, subject="简历B", sender="hr@test.com", body="...", date="2026-01-02"),
+        ],
+        uidvalidity=100,
+    )
+    service = MailService(session_factory=session_factory, imap=first)
+    assert len(service.sync_mailbox("INBOX")) == 2
+
+    # 第二次同步：服务商重排 UID（uidvalidity 变为 200，最大 UID 回退到 1）。
+    # 旧游标 last_uid=2 会漏掉新邮件，必须检测变化后重置重新拉取。
+    second = FakeImap(
+        messages=[
+            MailMessage(uid=1, subject="重排后简历", sender="hr@test.com", body="...", date="2026-01-03"),
+        ],
+        uidvalidity=200,
+    )
+    service2 = MailService(session_factory=session_factory, imap=second)
+    result = service2.sync_mailbox("INBOX")
+    assert [m.uid for m in result] == [1]
+
+
+def test_sync_mailbox_resets_stale_cursor_without_stored_uidvalidity(
+    session_factory: sessionmaker[Session],
+) -> None:
+    # 升级前的旧数据：last_uid 很大但无 uidvalidity，需保守重置避免漏拉。
+    with session_factory() as session:
+        session.add(MailCursor(mailbox="INBOX", last_uid=1099))
+        session.commit()
+
+    fake = FakeImap(
+        messages=[
+            MailMessage(uid=609, subject="简历", sender="hr@test.com", body="...", date="2026-01-01"),
+        ],
+        uidvalidity=300,
+    )
+    service = MailService(session_factory=session_factory, imap=fake)
+    result = service.sync_mailbox("INBOX")
+    assert [m.uid for m in result] == [609]
 
 
 def test_sync_mailbox_with_subject_filter(

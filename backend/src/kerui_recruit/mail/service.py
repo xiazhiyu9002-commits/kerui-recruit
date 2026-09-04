@@ -34,6 +34,8 @@ class ImapProvider(Protocol):
 
     def mark_read(self, uid: int) -> None: ...
 
+    def uidvalidity(self) -> int | None: ...
+
 
 class MailService:
     """Idempotent IMAP email fetcher with cursor tracking."""
@@ -59,10 +61,18 @@ class MailService:
                 cursor = MailCursor(mailbox=mailbox, last_uid=0)
                 session.add(cursor)
                 session.commit()
+            last_uid = cursor.last_uid
+            stored_uidvalidity = cursor.uidvalidity
 
+        current_uidvalidity: int | None = None
         self.imap.connect()
         try:
-            messages = self.imap.fetch_unread(cursor.last_uid)
+            current_uidvalidity = self.imap.uidvalidity()
+            # UIDVALIDITY 变化或首次缺失（旧游标）时，UID 可能已被服务商重排，
+            # 旧的 last_uid 不再可信，重置后重新拉取整箱。
+            if current_uidvalidity is not None and stored_uidvalidity != current_uidvalidity:
+                last_uid = 0
+            messages = self.imap.fetch_unread(last_uid)
         finally:
             self.imap.disconnect()
 
@@ -78,6 +88,8 @@ class MailService:
 
         with self.session_factory() as session:
             cursor = session.query(MailCursor).filter_by(mailbox=mailbox).one()
+            if current_uidvalidity is not None:
+                cursor.uidvalidity = current_uidvalidity
             for msg in messages:
                 self.imap.connect()
                 try:
