@@ -60,6 +60,9 @@ jobs:
         run: npm test
         working-directory: desktop
 
+      - name: Build Windows sidecar
+        run: .\backend\packaging\build_sidecar.ps1
+
       - name: Run Rust shell tests
         run: cargo test
         working-directory: desktop/src-tauri
@@ -71,9 +74,6 @@ jobs:
       - name: Run browser workflows
         run: npm run test:e2e
         working-directory: desktop
-
-      - name: Build Windows sidecar
-        run: .\backend\packaging\build_sidecar.ps1
 
       - name: Build NSIS installer
         run: npm run tauri:build:windows
@@ -122,6 +122,9 @@ jobs:
           npm run build
         working-directory: desktop
 
+      - name: Build Apple Silicon sidecar
+        run: bash backend/packaging/build_sidecar_macos.sh
+
       - name: Run Rust shell tests
         run: cargo test
         working-directory: desktop/src-tauri
@@ -133,9 +136,6 @@ jobs:
       - name: Run browser workflows
         run: npm run test:e2e
         working-directory: desktop
-
-      - name: Build Apple Silicon sidecar
-        run: bash backend/packaging/build_sidecar_macos.sh
 
       - name: Build unsigned app and DMG
         run: npm run tauri:build:macos
