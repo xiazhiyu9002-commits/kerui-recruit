@@ -147,7 +147,7 @@ async def test_scheduler_blocking_integrations_do_not_stall_event_loop(session_f
     started = threading.Event()
 
     class BlockingMail:
-        def poll_and_ingest(self, sender_domains=None):
+        def poll_and_ingest(self, sender_domains=None, resume_gate=None):
             started.set()
             release.wait(1)
             return []
