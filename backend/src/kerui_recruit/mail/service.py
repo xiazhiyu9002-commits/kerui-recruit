@@ -72,25 +72,28 @@ class MailService:
             # 旧的 last_uid 不再可信，重置后重新拉取整箱。
             if current_uidvalidity is not None and stored_uidvalidity != current_uidvalidity:
                 last_uid = 0
-            messages = self.imap.fetch_unread(last_uid)
+            fetched = self.imap.fetch_unread(last_uid)
         finally:
             self.imap.disconnect()
 
         if subject_filter:
             pattern = subject_filter.lower()
-            messages = [m for m in messages if pattern in m.subject.lower()]
+            fetched = [m for m in fetched if pattern in m.subject.lower()]
 
+        # 白名单只决定哪些邮件交付入库，不影响游标推进。
         if sender_domains:
             allowed = {d.strip().lstrip("@").lower() for d in sender_domains}
-            messages = [
-                m for m in messages if _matches_sender(m.sender, allowed)
-            ]
+            deliverable = [m for m in fetched if _matches_sender(m.sender, allowed)]
+        else:
+            deliverable = fetched
 
         with self.session_factory() as session:
             cursor = session.query(MailCursor).filter_by(mailbox=mailbox).one()
             if current_uidvalidity is not None:
                 cursor.uidvalidity = current_uidvalidity
-            for msg in messages:
+            # 游标推进到「所有拉取到的邮件」的最大 UID（含非白名单），
+            # 否则非白名单邮件会因游标不前进而被反复拉取。
+            for msg in fetched:
                 self.imap.connect()
                 try:
                     self.imap.mark_read(msg.uid)
@@ -100,7 +103,7 @@ class MailService:
                     cursor.last_uid = msg.uid
             session.commit()
 
-        return messages
+        return deliverable
 
     def reset_cursor(self, mailbox: str) -> None:
         with self.session_factory() as session:

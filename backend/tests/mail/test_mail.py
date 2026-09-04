@@ -162,6 +162,29 @@ def test_sync_mailbox_filters_by_full_email_and_prefixed_domain(
     assert {m.uid for m in result} == {1, 2}
 
 
+def test_sync_mailbox_advances_cursor_past_non_whitelisted_mail(
+    session_factory: sessionmaker[Session],
+) -> None:
+    # 非白名单邮件 UID 更大时，游标也应推进到它，避免每次轮询反复拉取。
+    fake = FakeImap(
+        messages=[
+            MailMessage(uid=1, subject="白名单简历", sender="hr@boss.com", body="...", date="2026-01-01"),
+            MailMessage(uid=2, subject="营销邮件", sender="spam@other.com", body="...", date="2026-01-02"),
+        ]
+    )
+    service = MailService(session_factory=session_factory, imap=fake)
+    result = service.sync_mailbox("INBOX", sender_domains={"boss.com"})
+
+    # 只交付白名单邮件
+    assert [m.uid for m in result] == [1]
+    # 但两封都被标记已读（非白名单也被消费，避免重复拉取）
+    assert fake.marked_read == [1, 2]
+
+    # 第二次同步：游标已推进到 2，不再重复拉取非白名单邮件
+    result2 = service.sync_mailbox("INBOX", sender_domains={"boss.com"})
+    assert len(result2) == 0
+
+
 def test_decode_filename_handles_rfc2047_resume_name() -> None:
     import base64
 
