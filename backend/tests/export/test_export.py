@@ -55,3 +55,43 @@ def test_export_mapping_tree_to_xlsx(session_factory: sessionmaker[Session]) -> 
     data = ExportService(session_factory).export_mapping_tree(snapshot_id)
 
     assert data.startswith(b"PK")  # xlsx（zip 容器）魔数
+
+
+def test_export_mapping_tree_to_pdf_paginates(session_factory: sessionmaker[Session]) -> None:
+    import pymupdf
+
+    with session_factory() as session:
+        project = MappingProject(name="大型组织")
+        session.add(project)
+        session.flush()
+        snapshot = MappingSnapshot(project_id=project.id, label="v1", is_current=True)
+        session.add(snapshot)
+        session.flush()
+
+        # 多节点 + 超长节点名，覆盖旧的单页遮挡场景。
+        parent_id = None
+        for i in range(120):
+            node = MappingNode(
+                snapshot_id=snapshot.id,
+                parent_id=parent_id,
+                name=f"部门{i}-" + "很长名字" * 8,
+                sort_order=i,
+            )
+            session.add(node)
+            session.flush()
+            if i % 10 == 0:
+                parent_id = node.id
+        session.commit()
+        snapshot_id = snapshot.id
+
+    data = ExportService(session_factory).export_mapping_tree_pdf(snapshot_id)
+
+    assert data.startswith(b"%PDF")
+    document = pymupdf.open(stream=data, filetype="pdf")
+    try:
+        text = "".join(page.get_text() for page in document)
+        assert document.page_count > 1  # 内容过多时应自动分页
+        assert "部门0-" in text
+        assert "部门119-" in text
+    finally:
+        document.close()

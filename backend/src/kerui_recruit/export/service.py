@@ -86,7 +86,9 @@ class ExportService:
         return buffer.getvalue()
 
     def export_mapping_tree_pdf(self, snapshot_id: str) -> bytes:
-        """Render an org-tree snapshot as an indented PDF."""
+        """Render an org-tree snapshot as an indented, auto-paginated PDF."""
+        import html as html_module
+
         import pymupdf
 
         with self.session_factory() as session:
@@ -109,12 +111,44 @@ class ExportService:
                 current = node_map[current.parent_id]
             return level
 
-        lines = [f"{'    ' * depth(node)}{node.name}" for node in nodes]
-        text = "\n".join(lines)
+        # 每个节点一个段落，按层级缩进；内容做 HTML 转义，避免特殊字符破坏排版。
+        paragraphs = [
+            f'<p style="margin:0 0 4px 0; text-indent:{depth(node) * 24}px;">'
+            f'{html_module.escape(node.name or "")}</p>'
+            for node in nodes
+        ]
+        body = "".join(paragraphs)
 
-        document = pymupdf.open()
-        page = document.new_page()
-        page.insert_text((72, 72), text, fontsize=11, fontname="china-s")
-        payload = document.tobytes()
-        document.close()
-        return payload
+        import gc
+        import os
+        import shutil
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        pdf_path = os.path.join(tmpdir, "mapping.pdf")
+        try:
+            writer = pymupdf.DocumentWriter(pdf_path)
+            story = pymupdf.Story(
+                html=body,
+                user_css='body { font-family: "china-s", sans-serif; font-size: 11px; }',
+            )
+            mediabox = pymupdf.paper_rect("a4")
+            where = pymupdf.Rect(72, 72, mediabox.width - 72, mediabox.height - 72)
+
+            # Story 自动换行 + 自动分页，避免长内容互相遮挡。
+            more = 1
+            device = None
+            while more:
+                device = writer.begin_page(mediabox)
+                more, _ = story.place(where)
+                story.draw(device)
+                writer.end_page()
+
+            writer.close()
+            # Windows 下显式释放底层文件句柄，确保临时 PDF 可被清理。
+            del device, writer, story
+            gc.collect()
+            with open(pdf_path, "rb") as fh:
+                return fh.read()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
