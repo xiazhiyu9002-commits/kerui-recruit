@@ -425,6 +425,7 @@ function fakeApi(): RecruitmentApi {
     listResumeRevisions: async () => [],
     lookupPool: async () => [],
     testMail: async () => ({ imap: { ok: true, message: "ok" }, smtp: { ok: true, message: "ok" } }),
+    sendMailConfirmation: async () => ({ sent: true, to: "a@b.com", message: "确认邮件已发送" }),
     syncMail: async () => ({ ingested: 0, revision_ids: [] }),
     mailStatus: async () => ({ configured: false, last_uid: 0 }),
     reviseOrgImport: async (draft) => draft,
@@ -835,11 +836,11 @@ describe("desktop recruitment workflow", () => {
 
     await user.click(screen.getByText("设置"));
     await user.click(screen.getByRole("button", { name: "测试 API" }));
-    expect(await screen.findByText("大模型：可用")).toBeVisible();
+    expect(await screen.findByText("正常：可用")).toBeVisible();
 
     await user.type(screen.getByLabelText("DeepSeek API Key"), "sk-test-key");
-    await user.click(screen.getByRole("button", { name: "保存设置" }));
-    expect(await screen.findByText("设置已保存，重启应用后生效")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "保存 API 配置" }));
+    expect(await screen.findByText("API 配置已保存，重启应用后生效")).toBeVisible();
   });
 
   test("shows machine and manual direction and supports re-evaluate and undo", async () => {

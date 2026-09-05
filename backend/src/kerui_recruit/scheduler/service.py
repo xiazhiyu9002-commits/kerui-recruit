@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session, sessionmaker
 
 from kerui_recruit.backup.service import BackupService
+from kerui_recruit.daily_followup.service import DailyFollowupService
 from kerui_recruit.mail.ingest import MailIngestService
 from kerui_recruit.mail.resume_gate import ResumeGate
 from kerui_recruit.match.service import MatchService
@@ -46,6 +47,7 @@ class SchedulerService:
         soft_delete_service: SoftDeleteService | None = None,
         sender_domains: set[str] | None = None,
         resume_gate: ResumeGate | None = None,
+        daily_followup_service: DailyFollowupService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.match_service = match_service
@@ -56,6 +58,7 @@ class SchedulerService:
         self.soft_delete_service = soft_delete_service
         self.sender_domains = sender_domains
         self.resume_gate = resume_gate
+        self.daily_followup_service = daily_followup_service
 
     async def reverse_match_candidate(
         self, candidate_id: str, *, limit: int = 20
@@ -118,11 +121,18 @@ class SchedulerService:
             return
         self.soft_delete_service.purge_expired()
 
+    def daily_followup_tick(self) -> None:
+        """Send due daily followup reports (21:30 evening, 09:00 morning)."""
+        if self.daily_followup_service is None:
+            return
+        self.daily_followup_service.send_due_reports()
+
     async def run_forever(self, *, interval_seconds: int = 300) -> None:
         while True:
             for name, operation in (
                 ("mail_ingest", self.poll_mail),
                 ("reminder_mail", self.send_reminder_mail),
+                ("daily_followup", self.daily_followup_tick),
                 ("backup", self.backup_tick),
                 ("recycle_bin", self.purge_recycle_bin),
             ):

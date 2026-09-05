@@ -317,6 +317,28 @@ td small { color: #8b978f; margin-top: 5px; }
 /* 统一加载组件 */
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -1px; margin-right: 6px; animation: spinner-rotate 0.7s linear infinite; }
 @keyframes spinner-rotate { to { transform: rotate(360deg); } }
+
+/* 设置页：模块分隔与标题层次 */
+.jd-panel .jd-form + .jd-form {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid #eef2ef;
+}
+.section-heading h3 {
+  margin: 0;
+  font-size: 13px;
+  color: #2a7656;
+  font-weight: 700;
+}
+.jd-panel .muted {
+  margin: 2px 0 0;
+  line-height: 1.6;
+}
+.jd-panel > .case-section + .jd-form {
+  margin-top: 32px;
+  padding-top: 22px;
+  border-top: 1px solid #eef2ef;
+}
 .skeleton { display: grid; gap: 10px; padding: 8px 0; }
 .skeleton__line { height: 14px; border-radius: 7px; background: linear-gradient(90deg, #eef2ef 25%, #f7faf8 50%, #eef2ef 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.2s ease-in-out infinite; }
 @keyframes skeleton-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }

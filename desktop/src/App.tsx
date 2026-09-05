@@ -722,6 +722,7 @@ export interface AppSettings {
   smtp_auth_code?: string;
   smtp_ssl?: boolean;
   reminder_to?: string;
+  daily_followup_enabled?: boolean;
 }
 
 export interface BackupSnapshot {
@@ -853,6 +854,7 @@ export interface RecruitmentApi {
   getVendors(): Promise<VendorPreset[]>;
   updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
   testMail(): Promise<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } }>;
+  sendMailConfirmation(): Promise<{ sent: boolean; to: string; message: string }>;
   syncMail(): Promise<{ ingested: number; revision_ids: string[] }>;
   mailStatus(): Promise<{ configured: boolean; last_uid: number }>;
   getDirectionTaxonomy(): Promise<DirectionTaxonomy>;
@@ -1386,7 +1388,8 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [settings, setSettings] = useState<AppSettings>({});
   const [vendors, setVendors] = useState<VendorPreset[]>([]);
   const [providerChecks, setProviderChecks] = useState<ProviderCheck[]>([]);
-  const [settingsMessage, setSettingsMessage] = useState("");
+  const [aiApiMessage, setAiApiMessage] = useState("");
+  const [mailMessage, setMailMessage] = useState("");
   const [mailTestResult, setMailTestResult] = useState<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } } | null>(null);
   const [mailSyncMessage, setMailSyncMessage] = useState("");
   const [mailStatus, setMailStatus] = useState<{ configured: boolean; last_uid: number } | null>(null);
@@ -2685,6 +2688,14 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  async function restartApp() {
+    try {
+      await invoke("restart_app");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "重启失败");
+    }
+  }
+
   async function testProviders() {
     setError(null);
     try {
@@ -2694,14 +2705,57 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  async function saveSettings(event: FormEvent) {
+  async function saveAiApiSettings(event: FormEvent) {
     event.preventDefault();
     setError(null);
     try {
-      setSettings(await api.updateSettings(settings));
-      setSettingsMessage("设置已保存，重启应用后生效");
+      const updated = await api.updateSettings({
+        deepseek_api_key: settings.deepseek_api_key,
+        text_api_key: settings.text_api_key,
+        text_base_url: settings.text_base_url,
+        text_model: settings.text_model,
+        vision_api_key: settings.vision_api_key,
+        vision_base_url: settings.vision_base_url,
+        vision_model: settings.vision_model,
+        siliconflow_api_key: settings.siliconflow_api_key,
+        tavily_api_key: settings.tavily_api_key,
+        serpapi_api_key: settings.serpapi_api_key,
+      });
+      setSettings((prev) => ({ ...prev, ...updated }));
+      setAiApiMessage("API 配置已保存，重启应用后生效");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "设置保存失败");
+      setError(caught instanceof Error ? caught.message : "API 配置保存失败");
+    }
+  }
+
+  async function saveMailSettings(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    try {
+      const updated = await api.updateSettings({
+        imap_host: settings.imap_host,
+        imap_account: settings.imap_account,
+        imap_auth_code: settings.imap_auth_code,
+        imap_whitelist: settings.imap_whitelist,
+        smtp_host: settings.smtp_host,
+        smtp_port: settings.smtp_port,
+        smtp_account: settings.smtp_account,
+        smtp_auth_code: settings.smtp_auth_code,
+        smtp_ssl: settings.smtp_ssl,
+        reminder_to: settings.reminder_to,
+        daily_followup_enabled: settings.daily_followup_enabled,
+      });
+      setSettings((prev) => ({ ...prev, ...updated }));
+      setMailMessage("邮箱配置已保存，重启应用后生效");
+      // 保存成功后尝试发送绑定确认邮件（失败不阻断保存）
+      try {
+        await api.sendMailConfirmation();
+        setMailMessage("邮箱配置已保存，确认邮件已发送，请查收");
+      } catch {
+        setMailMessage("邮箱配置已保存，但确认邮件发送失败，请检查 SMTP 配置");
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "邮箱配置保存失败");
     }
   }
 
@@ -3686,7 +3740,11 @@ export function App({ api }: { api: RecruitmentApi }) {
             <div className="case-section">
               <div className="section-heading">
                 <h2>启动检查</h2>
-                <button className="import-button" onClick={() => void loadOnboarding()}>运行检查</button>
+                <div className="case-actions">
+                  <button className="import-button" onClick={() => void loadSettings()}>重新加载设置</button>
+                  <button className="import-button" onClick={() => void loadOnboarding()}>运行检查</button>
+                  <button className="import-button" onClick={() => void restartApp()}>重启应用</button>
+                </div>
               </div>
               {onboarding && (
                 <div className="health-grid">
@@ -3704,20 +3762,21 @@ export function App({ api }: { api: RecruitmentApi }) {
               )}
             </div>
 
-            <form className="jd-form" onSubmit={(event) => void saveSettings(event)}>
+            <form className="jd-form" onSubmit={(event) => void saveAiApiSettings(event)}>
               <div className="section-heading">
                 <h2>模型 API 配置</h2>
                 <div className="case-actions">
-                  <button type="button" className="import-button" onClick={() => void loadSettings()}>加载</button>
                   <button type="button" className="import-button" onClick={() => void testProviders()}>测试 API</button>
-                  <button type="submit">保存设置</button>
+                  <button type="submit">保存 API 配置</button>
                 </div>
               </div>
+              <p className="muted">配置大模型与搜索服务；DeepSeek 是默认大模型，文本/视觉模型留空时，配置 DeepSeek API，自动使用 DeepSeek，保存后需重启应用生效。</p>
 
+              <div className="section-heading" style={{ marginTop: 12 }}><h3>默认大模型（DeepSeek）</h3></div>
               <div className="jd-row">
-                <input value={settings.deepseek_api_key ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_api_key: e.target.value })} placeholder="DeepSeek API Key" aria-label="DeepSeek API Key" />
+                <input value={settings.deepseek_api_key ?? ""} onChange={(e) => setSettings({ ...settings, deepseek_api_key: e.target.value })} placeholder="DeepSeek API Key（文本/视觉未单独配置时使用）" aria-label="DeepSeek API Key" />
               </div>
-              <div className="section-heading" style={{ marginTop: 12 }}><h3>文本 / 视觉模型</h3></div>
+              <div className="section-heading" style={{ marginTop: 12 }}><h3>文本 / 视觉模型（可选，留空则使用 DeepSeek）</h3></div>
               <div className="jd-row">
                 <select
                   aria-label="文本供应商"
@@ -3761,7 +3820,27 @@ export function App({ api }: { api: RecruitmentApi }) {
               <div className="jd-row">
                 <input value={settings.serpapi_api_key ?? ""} onChange={(e) => setSettings({ ...settings, serpapi_api_key: e.target.value })} placeholder="SerpApi API Key（Tavily 备选）" aria-label="SerpApi API Key" />
               </div>
-              <div className="section-heading" style={{ marginTop: 12 }}><h3>邮箱（IMAP 收件 + SMTP 发件）</h3></div>
+              {aiApiMessage && <p className="muted">{aiApiMessage}</p>}
+              {providerChecks.length > 0 && (
+                <div className="health-grid">
+                  {providerChecks.map((check) => (
+                    <div className="health-card" key={check.name}>
+                      <small>{PROVIDER_LABELS[check.name] ?? check.name}</small>
+                      <strong className={check.ok ? "ok" : "bad"}>{check.ok ? "正常" : "异常"}：{check.message}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </form>
+
+            <form className="jd-form" onSubmit={(event) => void saveMailSettings(event)}>
+              <div className="section-heading" style={{ marginTop: 12 }}>
+                <h3>邮箱与提醒（IMAP 收件 + SMTP 发件）</h3>
+                <div className="case-actions">
+                  <button type="submit">保存邮箱配置</button>
+                </div>
+              </div>
+              <p className="muted">配置 IMAP 收件（简历邮件入库）与 SMTP 发件（提醒通知）的服务器、账号和授权码；保存后系统会发送一封绑定确认邮件，且需重启应用生效。</p>
               <div className="jd-row">
                 <select
                   aria-label="邮箱预设"
@@ -3775,6 +3854,10 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <option value="imap.qq.com">QQ 邮箱</option>
                   <option value="imap.163.com">163 邮箱</option>
                 </select>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={settings.smtp_ssl !== false} onChange={(e) => setSettings({ ...settings, smtp_ssl: e.target.checked })} />
+                  SMTP SSL
+                </label>
               </div>
               <div className="jd-row">
                 <input value={settings.imap_host ?? ""} onChange={(e) => setSettings({ ...settings, imap_host: e.target.value })} placeholder="IMAP 主机" aria-label="IMAP 主机" />
@@ -3794,8 +3877,8 @@ export function App({ api }: { api: RecruitmentApi }) {
               </div>
               <div className="jd-row">
                 <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  <input type="checkbox" checked={settings.smtp_ssl !== false} onChange={(e) => setSettings({ ...settings, smtp_ssl: e.target.checked })} />
-                  SMTP SSL
+                  <input type="checkbox" checked={settings.daily_followup_enabled === true} onChange={(e) => setSettings({ ...settings, daily_followup_enabled: e.target.checked })} />
+                  每日待跟进报告（整理推荐未反馈 / 明日面试 / 面试未反馈，每日 21:30 与次日 09:00 各发送一次）
                 </label>
               </div>
               <p className="muted">QQ/163 邮箱需在邮箱设置中开启 IMAP/SMTP，并使用「授权码」作为密码，而非登录密码。</p>
@@ -3826,19 +3909,13 @@ export function App({ api }: { api: RecruitmentApi }) {
               {mailStatus && (
                 <p className="muted">邮箱已{mailStatus.configured ? "配置" : "未配置"} · 已同步收件 UID：{mailStatus.last_uid}</p>
               )}
-              {settingsMessage && <p className="muted">{settingsMessage}</p>}
-              {providerChecks.length > 0 && (
-                <div className="health-grid">
-                  {providerChecks.map((check) => (
-                    <div className="health-card" key={check.name}>
-                      <strong>{PROVIDER_LABELS[check.name] ?? check.name}：{check.message}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {mailMessage && <p className="muted">{mailMessage}</p>}
             </form>
 
+            <RemindersPanel api={api} onOpenCase={(caseId) => void openCaseDrawer(caseId)} />
+
             <div className="section-heading" style={{ marginTop: 20 }}><h2>数据目录</h2></div>
+            <p className="muted">存放数据库、简历原件、检索引擎等全部本地数据的根目录；输入绝对路径点「设置数据目录」后重启应用生效（留空使用默认目录）。</p>
             <div className="jd-row" style={{ marginTop: 12 }}>
               <input value={dataRootInput} onChange={(e) => setDataRootInput(e.target.value)} placeholder="数据目录绝对路径（留空使用默认）" aria-label="数据目录" />
               <button type="button" className="import-button" onClick={() => void saveDataRoot()}>设置数据目录</button>
@@ -3846,7 +3923,6 @@ export function App({ api }: { api: RecruitmentApi }) {
             {dataRootMessage && <p className="muted">{dataRootMessage}</p>}
 
             <IndexSyncPanel api={api} />
-            <RemindersPanel api={api} onOpenCase={(caseId) => void openCaseDrawer(caseId)} />
 
             <div className="section-heading" style={{ marginTop: 20 }}>
               <h2>健康检测台</h2>
@@ -3855,6 +3931,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <button className="import-button" onClick={() => void exportDiagnostics()}>导出诊断信息</button>
               </div>
             </div>
+            <p className="muted">检测数据库、原件库、检索引擎、磁盘四项健康状态；点「运行检测」查看各项状态，点「导出诊断信息」导出完整诊断 JSON。</p>
             {health && (
               <div className="health-grid">
                 {Object.entries(health).map(([name, component]) => (
@@ -3872,6 +3949,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <h2>回收站</h2>
                 <button className="import-button" onClick={() => void loadDeleted()}>加载回收站</button>
               </div>
+              <p className="muted">已软删除的候选人与岗位可在此恢复；点「加载回收站」查看列表，点「恢复」还原对应数据。</p>
               {deletedItems.length === 0 ? (
                 <p className="muted">暂无已删除的候选人或岗位</p>
               ) : (
@@ -3897,6 +3975,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <button className="import-button" disabled={backupBusy} onClick={() => void createBackup()}>{backupBusy ? "备份中…" : "立即备份"}</button>
                 </div>
               </div>
+              <p className="muted">创建本地数据库快照备份，或用加密口令生成便携备份迁移到其他设备；点「立即备份」/「恢复」操作快照，输入路径与口令创建/恢复便携备份。</p>
               {backups.length === 0 ? (
                 <p className="muted">暂无备份快照</p>
               ) : (
@@ -3948,6 +4027,7 @@ export function App({ api }: { api: RecruitmentApi }) {
 
             <div className="case-section">
               <div className="section-heading"><h2>数据迁移</h2></div>
+              <p className="muted">把当前数据复制到新目录并校验完整性；输入新目录绝对路径点「复制并校验」，通过后重启应用切换数据目录。</p>
               <form className="jd-form" onSubmit={(event) => void migrateData(event)}>
                 <input value={migrationTarget} onChange={(e) => setMigrationTarget(e.target.value)} placeholder="新数据目录（绝对路径）" aria-label="迁移目标目录" />
                 <button type="submit" disabled={migrationBusy}>{migrationBusy ? "迁移中…" : "复制并校验"}</button>

@@ -24,6 +24,7 @@ from kerui_recruit.core.settings import Settings
 from kerui_recruit.core.settings_service import SettingsService
 from kerui_recruit.core.settings_store import SettingsStore
 from kerui_recruit.correction.service import CorrectionService
+from kerui_recruit.daily_followup.service import DailyFollowupService
 from kerui_recruit.dashboard.service import DashboardService
 from kerui_recruit.db.migrate import migrate
 from kerui_recruit.db.session import create_engine_for
@@ -247,6 +248,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         )
 
     reminder_mail_service = None
+    daily_followup_service = None
     if settings.smtp_enabled:
         mail_sender = MailSender(
             host=settings.smtp_host,  # type: ignore[arg-type]
@@ -260,6 +262,12 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
             mail_sender=mail_sender,
             to=settings.reminder_to,
         )
+        if settings.daily_followup_enabled:
+            daily_followup_service = DailyFollowupService(
+                session_factory=factory,
+                mail_sender=mail_sender,
+                to=settings.reminder_to,
+            )
 
     resume_gate = None
     if text_key is not None:
@@ -279,6 +287,7 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         soft_delete_service=soft_delete_service,
         sender_domains=settings.imap_whitelist_domains,
         resume_gate=resume_gate,
+        daily_followup_service=daily_followup_service,
     )
 
     settings_service = SettingsService(

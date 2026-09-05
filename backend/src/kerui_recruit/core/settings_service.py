@@ -39,6 +39,7 @@ ALLOWED_FIELDS = frozenset(
         "smtp_auth_code",
         "smtp_ssl",
         "reminder_to",
+        "daily_followup_enabled",
     }
 )
 
@@ -104,6 +105,27 @@ class SettingsService:
             else:
                 data[key] = value
         self.store.save(data)
+
+    def get_mail_smtp_plain(self) -> dict | None:
+        """解密读取最新保存的 SMTP 配置，用于发送确认邮件；未配置返回 None。"""
+        data = self.store.load()
+        host = data.get("smtp_host")
+        account = data.get("smtp_account")
+        auth_code = data.get("smtp_auth_code")
+        if not (host and account and auth_code):
+            return None
+        try:
+            plain = self.encryption.decrypt(auth_code)
+        except Exception:
+            return None
+        return {
+            "host": host,
+            "account": account,
+            "auth_code": plain,
+            "port": int(data.get("smtp_port", 465)),
+            "ssl": bool(data.get("smtp_ssl", True)),
+            "to": data.get("reminder_to") or data.get("imap_account") or account,
+        }
 
 
 def _mask(secret: str) -> str:

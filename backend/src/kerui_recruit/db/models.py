@@ -796,6 +796,14 @@ class Employee(IdMixin, Base):
     )
 
 
+class DailyFollowupState(IdMixin, Base):
+    """每日待跟进报告的发送状态（单行记录，记录最后发送的早晚日期）。"""
+    __tablename__ = "daily_followup_state"
+
+    last_evening_date: Mapped[str | None] = mapped_column(String(10))
+    last_morning_date: Mapped[str | None] = mapped_column(String(10))
+
+
 class SchemaVersion(Base):
     __tablename__ = "schema_version"
 

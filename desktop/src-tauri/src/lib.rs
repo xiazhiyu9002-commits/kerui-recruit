@@ -270,6 +270,24 @@ fn save_file(filename: String, content: Vec<u8>) -> Result<Option<String>, Strin
     }
 }
 
+/// Terminate the sidecar and restart the whole app so saved settings reload.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(process) = app.try_state::<SidecarProcess>() {
+        if let Some(mut child) = process
+            .0
+            .lock()
+            .map_err(|_| "sidecar 进程状态不可用".to_string())?
+            .take()
+        {
+            terminate_sidecar(&mut child);
+        }
+    }
+    app.restart();
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let Some(icon) = app.default_window_icon() else {
         return Ok(());
@@ -324,7 +342,7 @@ pub fn run() {
             create_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root, open_external, save_file])
+        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root, open_external, save_file, restart_app])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the window minimizes to the system tray instead of

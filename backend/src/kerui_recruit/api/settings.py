@@ -7,6 +7,7 @@ from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.db.models import MailCursor
 from kerui_recruit.mail.imap_provider import ImapLibProvider
+from kerui_recruit.mail.sender import MailSender
 from kerui_recruit.providers.vendors import VENDORS
 
 
@@ -46,6 +47,7 @@ class UpdateSettingsRequest(BaseModel):
     smtp_auth_code: str | None = None
     smtp_ssl: bool | None = None
     reminder_to: str | None = None
+    daily_followup_enabled: bool | None = None
 
 
 @router.get("")
@@ -142,3 +144,40 @@ def mail_status(request: Request) -> dict:
         "configured": services.settings.mail_enabled,
         "last_uid": cursor.last_uid if cursor is not None else 0,
     }
+
+
+_MAIL_CONFIRMATION_BODY = """您的邮件功能已成功绑定，现在可以测试以下两个功能：
+
+【邮件简历入库】
+1. 从已加入白名单的发件邮箱，向本收件邮箱发送一封带简历附件的邮件；
+2. 附件支持 PDF、DOC、DOCX，主题建议写明应聘岗位，正文简单介绍求职意向；
+3. 系统每 5 分钟自动拉取一次收件箱，也可在「设置 → 邮箱」点「立即同步」手动触发；
+4. 成功入库的简历会出现在「人才库」页面。
+
+【提醒功能】
+1. 在「流程中」页面进入某个招聘案例，为其添加提醒（时间与内容）；
+2. 到达提醒时间后，系统会向您配置的「提醒收件人邮箱」自动发送提醒邮件；
+3. 30 分钟内到期的多条提醒会合并为一封邮件发送。
+"""
+
+
+@router.post("/mail/send-confirmation")
+def send_mail_confirmation(request: Request) -> dict:
+    services: AppServices = request.app.state.services
+    if services.settings_service is None:
+        raise ApiError(503, "E_MAIL_UNAVAILABLE", "设置服务不可用")
+    smtp = services.settings_service.get_mail_smtp_plain()
+    if smtp is None:
+        raise ApiError(400, "E_MAIL_NOT_CONFIGURED", "SMTP 未配置，无法发送确认邮件")
+    try:
+        sender = MailSender(
+            host=smtp["host"],
+            account=smtp["account"],
+            password=smtp["auth_code"],
+            port=smtp["port"],
+            ssl=smtp["ssl"],
+        )
+        sender.send(to=smtp["to"], subject="邮件功能已绑定", body=_MAIL_CONFIRMATION_BODY)
+        return {"sent": True, "to": smtp["to"], "message": "确认邮件已发送"}
+    except Exception as error:
+        raise ApiError(502, "E_MAIL_SEND_FAILED", f"确认邮件发送失败：{error}")
