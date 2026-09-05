@@ -1,3 +1,4 @@
+import imaplib
 import smtplib
 
 from fastapi import APIRouter, Request
@@ -6,7 +7,6 @@ from pydantic import BaseModel, Field
 from kerui_recruit.api.errors import ApiError
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.db.models import MailCursor
-from kerui_recruit.mail.imap_provider import ImapLibProvider
 from kerui_recruit.mail.sender import MailSender
 from kerui_recruit.providers.vendors import VENDORS
 
@@ -83,18 +83,27 @@ def update_settings(command: UpdateSettingsRequest, request: Request) -> dict:
 def test_mail(request: Request) -> dict:
     """Probe IMAP/SMTP connectivity with the currently configured credentials."""
     services: AppServices = request.app.state.services
-    settings = services.settings
+    # Reuse startup precedence: latest persisted values, then environment.
+    from kerui_recruit.sidecar import RuntimeArgs, build_settings
+
+    settings = build_settings(RuntimeArgs(
+        host="127.0.0.1", port=0,
+        token=services.settings.session_token.get_secret_value(),
+        data_root=services.settings.data_root,
+    ))
     results: dict[str, dict] = {}
 
     if settings.mail_enabled:
         try:
-            provider = ImapLibProvider(
-                host=settings.imap_host,  # type: ignore[arg-type]
-                account=settings.imap_account,  # type: ignore[arg-type]
-                password=settings.imap_auth_code.get_secret_value(),  # type: ignore[union-attr]
-            )
-            provider.connect()
-            provider.disconnect()
+            client = imaplib.IMAP4_SSL(settings.imap_host, 993, timeout=15)
+            try:
+                client.login(settings.imap_account, settings.imap_auth_code.get_secret_value())
+                client.select("INBOX")
+            finally:
+                try:
+                    client.logout()
+                except Exception:
+                    client.shutdown()
             results["imap"] = {"ok": True, "message": "IMAP 连接成功"}
         except Exception as error:
             results["imap"] = {"ok": False, "message": f"IMAP 连接失败：{error}"}
@@ -105,14 +114,17 @@ def test_mail(request: Request) -> dict:
     if smtp_ready:
         try:
             server = (
-                smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port)
+                smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=15)
                 if settings.smtp_ssl
-                else smtplib.SMTP(settings.smtp_host, settings.smtp_port)
+                else smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15)
             )
             try:
                 server.login(settings.smtp_account, settings.smtp_auth_code.get_secret_value())  # type: ignore[union-attr]
             finally:
-                server.quit()
+                try:
+                    server.quit()
+                except Exception:
+                    server.close()
             results["smtp"] = {"ok": True, "message": "SMTP 连接成功"}
         except Exception as error:
             results["smtp"] = {"ok": False, "message": f"SMTP 连接失败：{error}"}

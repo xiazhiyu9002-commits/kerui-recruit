@@ -1,5 +1,7 @@
 import asyncio
 import re
+import shutil
+import tempfile
 from dataclasses import asdict
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -407,6 +409,36 @@ def download_resume(revision_id: str, request: Request) -> FileResponse:
     import mimetypes
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     return FileResponse(path, filename=filename, media_type=media_type)
+
+
+@router.get("/revisions/{revision_id}/view-target")
+def resume_view_target(revision_id: str, request: Request) -> dict:
+    services: AppServices = request.app.state.services
+    with services.session_factory() as session:
+        revision = session.get(ResumeRevision, revision_id)
+        if revision is None:
+            raise ApiError(404, "E_REVISION_NOT_FOUND", "简历版本不存在")
+        source = services.blob_store.root / revision.blob.storage_path
+        filename = revision.original_filename
+    if not source.is_file():
+        raise ApiError(404, "E_BLOB_NOT_FOUND", "原始文件不存在")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in (".doc", ".docx"):
+        return {"kind": "preview", "filename": filename}
+    # A fresh, separate copy prevents edits in Word from changing the blob or
+    # another already-open document. Prefixing also avoids Windows device names.
+    name = re.split(r"[/\\]", filename)[-1]
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", Path(name).stem).strip(" .")[:80]
+    directory = services.settings.paths.temp / "open-documents"
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=f"resume-{stem}-", suffix=suffix, delete=False) as target:
+            target_path = Path(target.name)
+            with source.open("rb") as original:
+                shutil.copyfileobj(original, target)
+    except OSError as error:
+        raise ApiError(500, "E_DOCUMENT_OPEN", "无法创建简历查看副本") from error
+    return {"kind": "word", "filename": filename, "path": str(target_path.resolve())}
 
 
 @router.get("/revisions/{revision_id}/preview")

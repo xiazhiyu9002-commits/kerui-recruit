@@ -211,9 +211,28 @@ export class ApiClient implements RecruitmentApi {
       `${this.baseUrl}/api/resumes/revisions/${encodeURIComponent(revisionId)}/preview`,
       { headers }
     );
-    if (!response.ok) throw new Error("预览失败");
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({})) as ApiError;
+      throw new Error(error.message || error.detail || "预览失败");
+    }
     const blob = await response.blob();
     return URL.createObjectURL(blob);
+  }
+
+  async viewResume(revisionId: string): Promise<{ kind: "opened" | "preview"; filename: string; url?: string }> {
+    const target = await this.request<{ kind: "word" | "preview"; filename: string; path?: string }>(
+      `/api/resumes/revisions/${encodeURIComponent(revisionId)}/view-target`,
+    );
+    if (target.kind === "word") {
+      if (!target.path) throw new Error("Word 文件路径不可用，请重新打开。");
+      try {
+        await invoke("open_document", { path: target.path });
+      } catch (error) {
+        throw new Error(`无法使用系统默认应用打开 Word：${error instanceof Error ? error.message : String(error)}`);
+      }
+      return { kind: "opened", filename: target.filename };
+    }
+    return { kind: "preview", filename: target.filename, url: await this.previewResume(revisionId) };
   }
 
   searchCandidates(query: string, filters?: CandidateSearchFilters): Promise<CandidateSearchResult> {

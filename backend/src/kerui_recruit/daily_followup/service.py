@@ -57,7 +57,7 @@ class DailyFollowupService:
         if now_sh.time() >= time(21, 30) and last_evening != today:
             if self._send_report(now_sh):
                 self._mark("evening", today)
-        if now_sh.time() >= time(9, 0) and last_morning != today:
+        if time(9, 0) <= now_sh.time() < time(21, 30) and last_morning != today:
             if self._send_report(now_sh):
                 self._mark("morning", today)
 
@@ -87,6 +87,7 @@ class DailyFollowupService:
 
         recommended_no_feedback: list[dict] = []
         tomorrow_interview: list[dict] = []
+        today_interview: list[dict] = []
         interview_no_feedback: list[dict] = []
 
         with self.session_factory() as session:
@@ -126,26 +127,29 @@ class DailyFollowupService:
                             "name": candidate.display_name,
                             "time": rec_sh.strftime("%Y-%m-%d"),
                         })
-                elif entered and not results:
-                    ent_sh = _utc_to_shanghai(entered[-1].occurred_at)
+                elif entered:
+                    latest = entered[-1]
+                    round_results = [e for e in results if e.case_round_id == latest.case_round_id]
+                    if round_results and round_results[-1].result != "待反馈":
+                        continue
+                    ent_sh = _utc_to_shanghai(latest.occurred_at)
+                    item = {
+                        "company": jd.company,
+                        "title": jd.title,
+                        "name": candidate.display_name,
+                        "time": ent_sh.strftime("%Y-%m-%d %H:%M"),
+                    }
                     if ent_sh.date() == tomorrow:
-                        tomorrow_interview.append({
-                            "company": jd.company,
-                            "title": jd.title,
-                            "name": candidate.display_name,
-                            "time": ent_sh.strftime("%Y-%m-%d %H:%M"),
-                        })
-                    elif ent_sh.date() <= today:
-                        interview_no_feedback.append({
-                            "company": jd.company,
-                            "title": jd.title,
-                            "name": candidate.display_name,
-                            "time": ent_sh.strftime("%Y-%m-%d %H:%M"),
-                        })
+                        tomorrow_interview.append(item)
+                    elif ent_sh > now_sh and ent_sh.date() == today:
+                        today_interview.append(item)
+                    elif ent_sh <= now_sh:
+                        interview_no_feedback.append(item)
 
         return {
             "recommended_no_feedback": recommended_no_feedback,
             "tomorrow_interview": tomorrow_interview,
+            "today_interview": today_interview,
             "interview_no_feedback": interview_no_feedback,
         }
 
@@ -156,6 +160,11 @@ class DailyFollowupService:
         if data["recommended_no_feedback"]:
             lines.append("推荐未反馈：")
             for item in data["recommended_no_feedback"]:
+                lines.append(f"{item['company']}-{item['title']}-{item['name']}-{item['time']}")
+            lines.append("")
+        if data.get("today_interview"):
+            lines.append("今日待面试：")
+            for item in data["today_interview"]:
                 lines.append(f"{item['company']}-{item['title']}-{item['name']}-{item['time']}")
             lines.append("")
         if data["tomorrow_interview"]:

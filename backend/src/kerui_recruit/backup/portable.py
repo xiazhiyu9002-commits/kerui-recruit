@@ -1,27 +1,26 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import io
 import json
 import os
 import shutil
-import sqlite3
+import tempfile
 import zipfile
-from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from kerui_recruit.backup.service import _validate_sqlite
-from kerui_recruit.core.paths import AppPaths
+from kerui_recruit.backup.snapshot import snapshot_tree, file_hash, CHUNK_SIZE, REBUILD_MARKER
 
-_BACKUP_DIRS = ("db", "search", "blobs", "config")
+_MAGIC = b"KRBACKUP\x02"
 _SALT_SIZE = 16
 _KDF_ITERATIONS = 600_000
 _DATABASE_NAME = "recruit.sqlite3"
@@ -79,7 +78,7 @@ def _device(path: Path) -> int:
 class PortableBackupService:
     """Create an encrypted portable backup and restore it to a new directory.
 
-    The backup bundles a consistent SQLite snapshot, search projection, blobs
+    The backup bundles a consistent SQLite snapshot, a rebuild marker, blobs
     and config into one passphrase-encrypted ``.krbackup`` archive together with
     a SHA-256 manifest. Restore decrypts, extracts into a staging directory,
     verifies every file hash and the SQLite integrity, and only then promotes
@@ -91,10 +90,27 @@ class PortableBackupService:
 
     def create(self, target_path: Path, passphrase: str) -> Path:
         target_path = target_path.with_suffix(".krbackup")
-        archive = self._build_archive()
-        salt = os.urandom(_SALT_SIZE)
-        encrypted = Fernet(_derive_key(passphrase, salt)).encrypt(archive)
-        target_path.write_bytes(salt + encrypted)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target_path.with_name(f'.{target_path.name}.{uuid4().hex}.tmp')
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                archive = Path(tmp) / 'archive.zip'
+                self._build_archive(archive)
+                salt, nonce = os.urandom(_SALT_SIZE), os.urandom(12)
+                header = _MAGIC + salt + nonce
+                encryptor = Cipher(algorithms.AES(base64.urlsafe_b64decode(_derive_key(passphrase, salt))), modes.GCM(nonce)).encryptor()
+                encryptor.authenticate_additional_data(header)
+                with archive.open('rb') as source, temporary.open('wb') as output:
+                    output.write(header)
+                    while chunk := source.read(CHUNK_SIZE):
+                        output.write(encryptor.update(chunk))
+                    output.write(encryptor.finalize())
+                    output.write(encryptor.tag)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, target_path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return target_path
 
     def restore(
@@ -107,32 +123,26 @@ class PortableBackupService:
         if not backup_path.exists():
             raise PortableRestoreError("E_BACKUP_NOT_FOUND", "备份文件不存在")
 
-        payload = backup_path.read_bytes()
-        if len(payload) <= _SALT_SIZE:
-            raise PortableRestoreError("E_BACKUP_CORRUPT", "备份文件损坏或格式不正确")
-        salt, encrypted = payload[:_SALT_SIZE], payload[_SALT_SIZE:]
-        try:
-            archive = Fernet(_derive_key(passphrase, salt)).decrypt(encrypted)
-        except InvalidToken as error:
-            raise PortableRestoreError(
-                "E_BACKUP_DECRYPT_FAILED", "备份密码错误或备份文件已损坏"
-            ) from error
-
         target.parent.mkdir(parents=True, exist_ok=True)
         staging = target.parent / f".{target.name}.staging-{uuid4().hex[:8]}"
         staging.mkdir()
-
         try:
-            expected = self._extract_and_validate(archive, staging)
+            with tempfile.TemporaryDirectory() as tmp:
+                archive = Path(tmp) / 'archive.zip'
+                self._decrypt(backup_path, archive, passphrase)
+                expected = self._extract_and_validate(archive, staging)
+            # Legacy archives also contain stale search projections.
+            if (staging / 'search').exists():
+                shutil.rmtree(staging / 'search')
+            (staging / REBUILD_MARKER).write_text('1\n', encoding='ascii')
+            self._resolve_target(target)  # recheck before the promotion boundary
             self._promote(staging, target)
         except PortableRestoreError:
             shutil.rmtree(staging, ignore_errors=True)
             raise
-        except Exception as error:  # noqa: BLE001 - surface as readable restore error
+        except Exception as error:
             shutil.rmtree(staging, ignore_errors=True)
-            raise PortableRestoreError(
-                "E_BACKUP_RESTORE_FAILED", f"恢复失败：{error}"
-            ) from error
+            raise PortableRestoreError('E_BACKUP_RESTORE_FAILED', f'恢复失败：{error}') from error
 
         files_restored = len(expected)
         return PortableRestoreReport(
@@ -142,60 +152,72 @@ class PortableBackupService:
             ok=True,
         )
 
-    def _build_archive(self) -> bytes:
-        source = AppPaths.from_root(self.current_root)
-        manifest: dict[str, str] = {}
-        buffer = io.BytesIO()
+    @staticmethod
+    def _decrypt(backup: Path, archive: Path, passphrase: str) -> None:
+        with backup.open('rb') as source:
+            magic = source.read(len(_MAGIC))
+            if magic != _MAGIC:
+                # Legacy Fernet tokens are monolithic and necessarily use memory
+                # proportional to archive size. New v2 backups never use this path.
+                source.seek(0)
+                payload = source.read()
+                if len(payload) <= _SALT_SIZE:
+                    raise PortableRestoreError('E_BACKUP_CORRUPT', '备份文件损坏')
+                try:
+                    archive.write_bytes(Fernet(_derive_key(passphrase, payload[:_SALT_SIZE])).decrypt(payload[_SALT_SIZE:]))
+                except InvalidToken as error:
+                    raise PortableRestoreError('E_BACKUP_DECRYPT_FAILED', '备份密码错误或文件损坏') from error
+                return
+            salt, nonce = source.read(_SALT_SIZE), source.read(12)
+            remaining = backup.stat().st_size - len(_MAGIC) - _SALT_SIZE - 12 - 16
+            if remaining < 0 or len(nonce) != 12:
+                raise PortableRestoreError('E_BACKUP_CORRUPT', '备份文件损坏')
+            source.seek(-16, os.SEEK_END)
+            tag = source.read(16)
+            source.seek(len(_MAGIC) + _SALT_SIZE + 12)
+            decryptor = Cipher(algorithms.AES(base64.urlsafe_b64decode(_derive_key(passphrase, salt))), modes.GCM(nonce, tag)).decryptor()
+            decryptor.authenticate_additional_data(_MAGIC + salt + nonce)
+            try:
+                with archive.open('wb') as output:
+                    while remaining:
+                        chunk = source.read(min(CHUNK_SIZE, remaining))
+                        if not chunk:
+                            raise InvalidTag
+                        remaining -= len(chunk)
+                        output.write(decryptor.update(chunk))
+                    output.write(decryptor.finalize())
+            except InvalidTag as error:
+                raise PortableRestoreError('E_BACKUP_DECRYPT_FAILED', '备份密码错误或文件损坏') from error
 
-        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for name in _BACKUP_DIRS:
-                directory = source.root / name
-                if not directory.exists():
-                    continue
-                for path in sorted(directory.rglob("*")):
-                    if not path.is_file():
-                        continue
-                    relative = path.relative_to(source.root).as_posix()
-                    if name == "db" and path.name in (
-                        f"{_DATABASE_NAME}-wal",
-                        f"{_DATABASE_NAME}-shm",
-                    ):
-                        # WAL/SHM are live journal state; the consistent snapshot
-                        # below already contains the checkpointed database.
-                        continue
-                    if name == "db" and path.name == _DATABASE_NAME:
-                        data = _snapshot_sqlite(path)
-                    else:
-                        data = path.read_bytes()
-                    manifest[relative] = hashlib.sha256(data).hexdigest()
-                    archive.writestr(relative, data)
-            archive.writestr(
-                "manifest.json",
-                json.dumps(
-                    {
-                        "created": datetime.now(timezone.utc).isoformat(),
-                        "files": manifest,
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        return buffer.getvalue()
+    def _build_archive(self, output: Path) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp)
+            snapshot_tree(self.current_root, snapshot)
+            manifest = {}
+            with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(snapshot.rglob('*')):
+                    if path.is_file():
+                        relative = path.relative_to(snapshot).as_posix()
+                        manifest[relative] = file_hash(path)
+                        archive.write(path, relative)
+                archive.writestr('manifest.json', json.dumps({'version': 2, 'created': datetime.now(timezone.utc).isoformat(), 'files': manifest}))
 
-    def _extract_and_validate(self, archive: bytes, staging: Path) -> dict[str, str]:
+    def _extract_and_validate(self, archive: Path, staging: Path) -> dict[str, str]:
         expected = self._read_manifest(archive)
-        with zipfile.ZipFile(io.BytesIO(archive), "r") as source:
+        with zipfile.ZipFile(archive, "r") as source:
             for info in source.infolist():
                 if info.is_dir() or info.filename == "manifest.json":
                     continue
                 destination = self._safe_join(staging, info.filename)
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(source.read(info))
+                with source.open(info) as input_stream, destination.open("wb") as output_stream:
+                    shutil.copyfileobj(input_stream, output_stream, CHUNK_SIZE)
 
         actual: dict[str, str] = {}
         for path in staging.rglob("*"):
             if path.is_file():
                 relative = path.relative_to(staging).as_posix()
-                actual[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+                actual[relative] = file_hash(path)
 
         if set(actual.keys()) != set(expected.keys()):
             missing = sorted(set(expected.keys()) - set(actual.keys()))
@@ -213,17 +235,18 @@ class PortableBackupService:
                 )
 
         database = staging / "db" / _DATABASE_NAME
-        if database.exists():
-            try:
-                _validate_sqlite(database)
-            except ValueError as error:
-                raise PortableRestoreError("E_BACKUP_DB_INVALID", str(error)) from error
+        if not database.is_file():
+            raise PortableRestoreError("E_BACKUP_DB_INVALID", "备份缺少人才库数据库")
+        try:
+            _validate_sqlite(database)
+        except ValueError as error:
+            raise PortableRestoreError("E_BACKUP_DB_INVALID", str(error)) from error
 
         return expected
 
     @staticmethod
-    def _read_manifest(archive: bytes) -> dict[str, str]:
-        with zipfile.ZipFile(io.BytesIO(archive), "r") as source:
+    def _read_manifest(archive: Path) -> dict[str, str]:
+        with zipfile.ZipFile(archive, "r") as source:
             try:
                 manifest_bytes = source.read("manifest.json")
             except KeyError as error:
@@ -257,41 +280,36 @@ class PortableBackupService:
             )
         return destination
 
-    @staticmethod
-    def _resolve_target(target_root: Path) -> Path:
+    def _resolve_target(self, target_root: Path) -> Path:
         if not str(target_root).strip():
             raise PortableRestoreError("E_BACKUP_INVALID_TARGET", "恢复目标路径为空")
         try:
-            return target_root.expanduser().resolve()
+            target = target_root.expanduser().resolve()
+            current = self.current_root.expanduser().resolve()
+            if (target == Path(target.anchor) or target == Path.home().resolve()
+                    or target.is_relative_to(current) or current.is_relative_to(target)
+                    or (target.exists() and (not target.is_dir() or any(target.iterdir())))):
+                raise PortableRestoreError('E_BACKUP_INVALID_TARGET', '请选择与当前数据目录无嵌套关系的空目录')
+            return target
+        except PortableRestoreError:
+            raise
         except (OSError, ValueError, RuntimeError) as error:
             raise PortableRestoreError("E_BACKUP_INVALID_TARGET", "恢复目标路径无法解析") from error
 
     @staticmethod
     def _promote(staging: Path, target: Path) -> None:
-        rollback = target.parent / f".{target.name}.rollback-{uuid4().hex[:8]}"
-        moved_aside = False
+        removed_empty_target = False
         try:
             if target.exists():
-                target.rename(rollback)
-                moved_aside = True
+                # Atomic emptiness check: never rename then recursively delete
+                # a directory that acquired unrelated files since validation.
+                target.rmdir()
+                removed_empty_target = True
             os.replace(staging, target)
         except OSError as error:
-            if moved_aside and rollback.exists() and not target.exists():
-                rollback.rename(target)
+            if removed_empty_target and not target.exists():
+                target.mkdir(exist_ok=True)
             raise PortableRestoreError(
                 "E_BACKUP_PROMOTE_FAILED", f"恢复目录替换失败：{error}"
             ) from error
-        if moved_aside:
-            shutil.rmtree(rollback, ignore_errors=True)
 
-
-def _snapshot_sqlite(path: Path) -> bytes:
-    """Take a consistent SQLite snapshot via the online backup API."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / "snapshot.sqlite3"
-        with closing(sqlite3.connect(path)) as source_connection:
-            with closing(sqlite3.connect(target)) as target_connection:
-                source_connection.backup(target_connection)
-        return target.read_bytes()

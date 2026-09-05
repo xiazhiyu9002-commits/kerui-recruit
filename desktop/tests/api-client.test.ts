@@ -1,9 +1,22 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { invoke } from "@tauri-apps/api/core";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
 
 import { ApiClient } from "../src/api/client";
 
 
 describe("ApiClient", () => {
+  test("opens Word by authoritative metadata through the default-app command", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ kind: "word", filename: "简历.DOCX", path: "C:/managed/open-documents/a.docx" })));
+    const client = new ApiClient("http://localhost", "token", fetcher);
+    expect(await client.viewResume("r")).toEqual({ kind: "opened", filename: "简历.DOCX" });
+    expect(invoke).toHaveBeenCalledWith("open_document", { path: "C:/managed/open-documents/a.docx" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  test("preserves specific preview errors from the backend", async () => {
+    const client = new ApiClient("http://localhost", "token", async () => new Response(JSON.stringify({ message: "原始文件不存在" }), { status: 404 }));
+    await expect(client.previewResume("missing")).rejects.toThrow("原始文件不存在");
+  });
   test("preserves reminder case linkage, paused state and explicit Shanghai timestamps", async () => {
     const requests: Request[] = [];
     const linked = { id: "reminder-1", title: "跟进张三", note: null, remind_at: "2026-09-02T01:30:00Z", dismissed: false, dismissed_at: null, case_id: "case-1", paused_by_workflow: true };

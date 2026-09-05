@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
+import sqlite3
+import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
+from kerui_recruit.backup.snapshot import snapshot_tree, file_hash, REBUILD_MARKER
 
 _COPY_DIRS = ("db", "search", "blobs", "config")
 
@@ -56,21 +59,23 @@ class MigrationService:
         staging = target.parent / f".{target.name}.staging-{uuid4().hex[:8]}"
         staging.mkdir()
 
-        source_manifest = self._essential_manifest(source_root)
-        if not source_manifest:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise MigrationError(
-                "E_MIGRATION_EMPTY_SOURCE", "源数据目录为空，没有可迁移的内容"
-            )
-
         try:
-            self._copy_essential_dirs(source_root, staging)
-            staging_manifest = self._essential_manifest(staging)
-            if staging_manifest != source_manifest:
-                raise MigrationError(
-                    "E_MIGRATION_VERIFY_FAILED",
-                    "迁移校验失败：复制后的文件数量或哈希与源目录不一致",
-                )
+            if not (source_root / "db" / "recruit.sqlite3").is_file():
+                raise MigrationError("E_MIGRATION_EMPTY_SOURCE", "源目录缺少人才库数据库")
+            with tempfile.TemporaryDirectory(prefix="kerui-migration-") as temporary:
+                snapshot = Path(temporary)
+                snapshot_tree(source_root, snapshot)
+                source_manifest = self._essential_manifest(snapshot)
+                self._copy_essential_dirs(snapshot, staging)
+                staging_manifest = self._essential_manifest(staging)
+                if staging_manifest != source_manifest:
+                    raise MigrationError(
+                        "E_MIGRATION_VERIFY_FAILED",
+                        "迁移校验失败：复制后的文件数量或哈希与一致性快照不一致",
+                    )
+            with closing(sqlite3.connect(staging / "db" / "recruit.sqlite3")) as connection:
+                candidate_count = connection.execute("SELECT COUNT(*) FROM candidate").fetchone()[0]
+            self._validate_target(source_root, target)
             self._promote(staging, target)
         except MigrationError:
             shutil.rmtree(staging, ignore_errors=True)
@@ -86,7 +91,7 @@ class MigrationService:
             target_root=str(target),
             files_copied=files_copied,
             files_verified=files_copied,
-            candidate_count=self._count_candidates(),
+            candidate_count=candidate_count,
             ok=True,
         )
 
@@ -144,6 +149,7 @@ class MigrationService:
             if not source.exists():
                 continue
             shutil.copytree(source, staging / name)
+        shutil.copy2(source_root / REBUILD_MARKER, staging / REBUILD_MARKER)
 
     @staticmethod
     def _promote(staging: Path, target: Path) -> None:
@@ -167,8 +173,10 @@ class MigrationService:
                 continue
             for path in base.rglob("*"):
                 if path.is_file():
-                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    digest = file_hash(path)
                     manifest[str(path.relative_to(root))] = digest
+        if (root / REBUILD_MARKER).is_file():
+            manifest[REBUILD_MARKER] = file_hash(root / REBUILD_MARKER)
         return manifest
 
     def _count_candidates(self) -> int:

@@ -431,6 +431,7 @@ function fakeApi(): RecruitmentApi {
     reviseOrgImport: async (draft) => draft,
     downloadResume: async () => undefined,
     previewResume: async () => "blob:preview",
+    viewResume: async () => ({ kind: "preview", filename: "resume.pdf", url: "blob:preview" }),
     listCandidates: async () => [],
     listJds: async () => [],
     updateCandidateField: async (candidateId, field, value) => ({ candidate_id: candidateId, revision_id: "revision-1", field, value }),
@@ -656,6 +657,62 @@ function fakeApi(): RecruitmentApi {
     testProviders: async () => [{ name: "llm", ok: true, message: "可用" }]
   };
 }
+
+describe("reviewed desktop reliability", () => {
+  test("keeps the OCR drawer open through an initial status network failure", async () => {
+    const api = fakeApi();
+    const oldReview = await api.getResumeReview("revision-1");
+    api.getResumeReview = vi.fn().mockResolvedValueOnce({ ...oldReview, parsed_data: { name: "old" } })
+      .mockResolvedValue({ ...oldReview, parsed_data: { name: "new OCR" }, raw_text: "updated evidence" });
+    api.getTask = vi.fn().mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValue({ id: "task-1", task_type: "PARSE_RESUME", status: "SUCCESS", progress: 100, error_message: null });
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.type(screen.getByLabelText("人才搜索"), "Python");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(await screen.findByRole("button", { name: "解析与方向" }));
+    const drawer = screen.getByRole("dialog", { name: "简历复核" });
+    await user.click(within(drawer).getByRole("button", { name: "强制OCR" }));
+    expect(await within(drawer).findByRole("button", { name: "解析中…" })).toBeDisabled();
+    await waitFor(() => expect(within(drawer).getByLabelText("复核姓名")).toHaveValue("new OCR"), { timeout: 4000 });
+    expect(within(drawer).getByText("updated evidence")).toBeVisible();
+  });
+  test("loads saved settings on entry and removes SerpApi from the form", async () => {
+    const api = fakeApi();
+    api.getSettings = vi.fn(async () => ({ text_model: "saved-model" }));
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("设置"));
+    expect(await screen.findByDisplayValue("saved-model")).toBeVisible();
+    expect(screen.queryByLabelText("SerpApi API Key")).not.toBeInTheDocument();
+  });
+
+  test("searches using filters only and distinguishes zero matches", async () => {
+    const api = fakeApi();
+    api.searchCandidates = vi.fn(async () => ({ items: [], degraded_reasons: [], empty_reason: "no_match" }));
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.click(screen.getByText("精确筛选"));
+    await user.selectOptions(screen.getByLabelText("最低学历"), "MASTER");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    expect(api.searchCandidates).toHaveBeenCalledWith("", { highest_degree: "MASTER" });
+    expect(await screen.findByText("没有符合条件的候选人")).toBeVisible();
+  });
+
+  test("uses the document viewing service for Word details without downloading", async () => {
+    const api = fakeApi();
+    api.searchCandidates = async () => ({ items: [{ candidate_id: "c", revision_id: "r", name: "张三", phone: null, reasons: [], parsed_data: null, content: "", score: 1, matched_channels: [], total_years: null, highest_degree: null, location: null, original_filename: "简历.docx" }], degraded_reasons: [] });
+    api.viewResume = vi.fn(async () => ({ kind: "opened" as const, filename: "简历.docx" }));
+    api.downloadResume = vi.fn();
+    const user = userEvent.setup();
+    render(<App api={api} />);
+    await user.type(screen.getByLabelText("人才搜索"), "张三");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await user.click(await screen.findByRole("button", { name: "查看详情" }));
+    expect(api.viewResume).toHaveBeenCalledWith("r");
+    expect(api.downloadResume).not.toHaveBeenCalled();
+  });
+});
 
 
 describe("desktop recruitment workflow", () => {

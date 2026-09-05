@@ -37,7 +37,7 @@ class CandidateFiltersRequest(BaseModel):
 
 
 class CandidateSearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=2_000)
+    query: str = Field(default="", max_length=2_000)
     filters: CandidateFiltersRequest = Field(default_factory=CandidateFiltersRequest)
     limit: int = Field(default=20, ge=1, le=100)
 

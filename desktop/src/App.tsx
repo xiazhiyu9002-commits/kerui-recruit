@@ -1,4 +1,5 @@
 import { FormEvent, Fragment, MouseEvent as ReactMouseEvent, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { waitForTask } from "./tasks/polling";
 import { invoke } from "@tauri-apps/api/core";
 
 import "./styles.css";
@@ -698,8 +699,6 @@ export interface AppSettings {
   siliconflow_reranker_model?: string;
   tavily_api_key?: string;
   tavily_base_url?: string;
-  serpapi_api_key?: string;
-  serpapi_base_url?: string;
   text_base_url?: string;
   text_model?: string;
   text_api_key?: string;
@@ -790,6 +789,7 @@ export interface RecruitmentApi {
   retryIndexSync(): Promise<IndexSyncStatus>;
   downloadResume(revisionId: string, filename: string): Promise<void>;
   previewResume(revisionId: string): Promise<string>;
+  viewResume(revisionId: string): Promise<{ kind: "opened" | "preview"; filename: string; url?: string }>;
   searchCandidates(query: string, filters?: CandidateSearchFilters): Promise<CandidateSearchResult>;
   listCandidates(): Promise<CandidateListItem[]>;
   listCandidatesPage?(page: number, pageSize: number): Promise<CandidatePage>;
@@ -1283,6 +1283,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   // 人才库
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CandidateSearchItem[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
   const [candidates, setCandidates] = useState<CandidateListItem[]>([]);
   const [candidatePage, setCandidatePage] = useState(1);
   const [candidateTotal, setCandidateTotal] = useState(0);
@@ -1294,6 +1295,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   });
   const [directions, setDirections] = useState<SearchDirectionTaxonomy | null>(null);
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
+  const taskPolls = useRef(new Map<string, { controller: AbortController; promise: Promise<TaskStatus> }>());
   const [folderPath, setFolderPath] = useState("");
   const [batchProgress, setBatchProgress] = useState<{ total: number; waiting: number; running: number; done: number; failed: number; percent: number } | null>(null);
   const [batchTaskIds, setBatchTaskIds] = useState<string[]>([]);
@@ -1418,7 +1420,10 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   async function submitSearch(event: FormEvent) {
     event.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim() && !Object.values(searchFilterDraft).some((value) => value !== "")) {
+      setNotice("请输入搜索词或选择筛选条件。");
+      return;
+    }
     setSearching(true);
     setError(null);
     setNotice(null);
@@ -1435,6 +1440,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       if (searchFilterDraft.direction) filters.primary_role_family = searchFilterDraft.direction;
       if (searchFilterDraft.businessDomains.trim()) filters.business_domains = splitList(searchFilterDraft.businessDomains);
       const response = await api.searchCandidates(query.trim(), filters);
+      setHasSearched(true);
       setResults(response.items);
       if (response.empty_reason === "index_not_ready") {
         setNotice("索引尚未就绪，请先导入并解析简历。");
@@ -1451,24 +1457,24 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
-  function pollTask(taskId: string) {
-    async function run() {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-        try {
-          const task = await api.getTask(taskId);
-          setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
-          if (task.status === "SUCCESS" || task.status === "FAILED" || task.status === "DEAD_LETTER") {
-            if (task.task_type === "PARSE_RESUME") await loadCandidates(1);
-            return;
-          }
-        } catch {
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
-    void run();
+  function pollTask(taskId: string): Promise<TaskStatus> {
+    const existing = taskPolls.current.get(taskId);
+    if (existing) return existing.promise;
+    const controller = new AbortController();
+    const promise = waitForTask(() => api.getTask(taskId), (task) => {
+      setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
+    }, {
+      signal: controller.signal,
+      onError: () => setNotice("任务状态暂时无法获取，正在自动重试；后台任务不会因此停止。"),
+    }).then(async (task) => {
+      if (task.task_type === "PARSE_RESUME") await loadCandidates(1);
+      if (task.task_type === "PARSE_JD") await loadJds();
+      return task;
+    }).finally(() => taskPolls.current.delete(taskId));
+    taskPolls.current.set(taskId, { controller, promise });
+    // Background callers need no rejection handler when the app unmounts.
+    void promise.catch(() => {});
+    return promise;
   }
 
   async function loadTasks() {
@@ -1506,11 +1512,13 @@ export function App({ api }: { api: RecruitmentApi }) {
 
   function closeSearchResults() {
     setResults([]);
+    setHasSearched(false);
   }
 
   function resetSearchAndGoHome() {
     setQuery("");
     setResults([]);
+    setHasSearched(false);
     setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "" });
     void loadCandidates(1);
   }
@@ -1531,25 +1539,11 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     try {
       const result = await api.reparseResume(revisionId, true);
-      const task = await api.getTask(result.task_id);
-      setTasks((current) => [task, ...current.filter((entry) => entry.id !== task.id)]);
-      pollTask(result.task_id);
-      // 完成后刷新候选人列表，让新画像/状态回显。
-      const deadline = Date.now() + 120_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        try {
-          const current = await api.getTask(result.task_id);
-          if (current.status === "SUCCESS" || current.status === "FAILED" || current.status === "DEAD_LETTER") {
-            if (current.status === "SUCCESS") await loadCandidates();
-            break;
-          }
-        } catch {
-          break;
-        }
-      }
+      const completed = await pollTask(result.task_id);
+      if (completed.status !== "SUCCESS") throw new Error(completed.error_message || "重新解析未完成，请检查任务状态后重试。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "强制 OCR 重新解析失败");
+      throw caught;
     }
   }
 
@@ -1689,16 +1683,14 @@ export function App({ api }: { api: RecruitmentApi }) {
     setError(null);
     setNotice(null);
     const file = filename || name || "";
-    const suffix = file.slice(file.lastIndexOf(".")).toLowerCase();
-    if (suffix === ".doc" || suffix === ".docx") {
-      setNotice("该简历为 Word 版本，请下载后浏览");
-      void downloadResumeFile(revisionId, filename || name || "简历");
-      return;
-    }
     try {
-      const url = await api.previewResume(revisionId);
-      setPreviewName(file || "简历预览");
-      setPreviewUrl(url);
+      const target = await api.viewResume(revisionId);
+      if (target.kind === "opened") {
+        setNotice("已交给系统默认应用打开 Word 文档。");
+      } else if (target.url) {
+        setPreviewName(target.filename || file || "简历预览");
+        setPreviewUrl(target.url);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "简历预览失败");
     }
@@ -1742,7 +1734,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                         <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
                       </span>
                       <span className="row-actions__group row-actions__group--right">
-                        <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
+                        <button className="detail-button" onClick={() => void forceReparse(r.revisionId).catch(() => {})}>强制OCR</button>
                         <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{reviewActionLabel(r.revisionStatus, r.reviewError)}</button>
                       </span>
                     </div>
@@ -1805,7 +1797,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <div className="v-col v-biz"><EditableCell value={bizValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "business_direction", splitList(next))} /></div>
                 <div className="v-col v-dir">主方向：{directionLabel(p?.direction_profile)}</div>
                 <div className="v-col v-actions">
-                  <button className="detail-button" onClick={() => void forceReparse(r.revisionId)}>强制OCR</button>
+                  <button className="detail-button" onClick={() => void forceReparse(r.revisionId).catch(() => {})}>强制OCR</button>
                   <button className="detail-button" onClick={() => void openResumeReview(r.revisionId)}>{reviewActionLabel(r.revisionStatus, r.reviewError)}</button>
                 </div>
               </div>
@@ -2719,7 +2711,6 @@ export function App({ api }: { api: RecruitmentApi }) {
         vision_model: settings.vision_model,
         siliconflow_api_key: settings.siliconflow_api_key,
         tavily_api_key: settings.tavily_api_key,
-        serpapi_api_key: settings.serpapi_api_key,
       });
       setSettings((prev) => ({ ...prev, ...updated }));
       setAiApiMessage("API 配置已保存，重启应用后生效");
@@ -2953,6 +2944,18 @@ export function App({ api }: { api: RecruitmentApi }) {
   }, []);
 
   useEffect(() => {
+    return () => {
+      for (const poll of taskPolls.current.values()) poll.controller.abort();
+      taskPolls.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const release = URL.revokeObjectURL?.bind(URL);
+    return () => { if (previewUrl) release?.(previewUrl); };
+  }, [previewUrl]);
+
+  useEffect(() => {
     api.getDirections().then(setDirections).catch(() => {});
     api.getVendors().then(setVendors).catch(() => {});
   }, []);
@@ -2963,6 +2966,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     if (activeNav === 2 || activeNav === 6) void loadJds();
     if (activeNav === 2) void loadDashboard();
     if (activeNav === 6) void loadCases();
+    if (activeNav === 5) void loadSettings();
   }, [activeNav]);
 
   const displayOrgTree = useMemo(
@@ -3117,7 +3121,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <span>{results.length} 条结果</span>
                 </div>
                 {results.length === 0 ? (
-                  <div className="empty-state"><strong>从一次搜索开始</strong><p>输入技能、经历或自然语言条件查找人才，或点击「显示全部候选人」查看已导入人才。</p></div>
+                  <div className="empty-state"><strong>{hasSearched ? "没有符合条件的候选人" : "从一次搜索开始"}</strong><p>{hasSearched ? "可调整搜索词或筛选条件后重试。" : "输入技能、经历或自然语言条件查找人才，或点击「显示候选人」查看已导入人才。"}</p></div>
                 ) : (
                   resultsTable
                 )}
@@ -3818,7 +3822,6 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <input value={settings.tavily_api_key ?? ""} onChange={(e) => setSettings({ ...settings, tavily_api_key: e.target.value })} placeholder="Tavily API Key" aria-label="Tavily API Key" />
               </div>
               <div className="jd-row">
-                <input value={settings.serpapi_api_key ?? ""} onChange={(e) => setSettings({ ...settings, serpapi_api_key: e.target.value })} placeholder="SerpApi API Key（Tavily 备选）" aria-label="SerpApi API Key" />
               </div>
               {aiApiMessage && <p className="muted">{aiApiMessage}</p>}
               {providerChecks.length > 0 && (
@@ -4193,7 +4196,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       )}
 
       {caseDrawer && <CaseDrawer key={caseDrawer.id} api={api} initialCase={caseDrawer} onClose={() => setCaseDrawer(null)} onUpdated={(detail) => { setCaseDrawer(detail); setCases((items) => items.map((item) => item.id === detail.id ? detail : item)); }} />}
-      {resumeReview && <ResumeReviewDrawer key={resumeReview.revision_id} api={api} initialReview={resumeReview} onClose={() => setResumeReview(null)} onApproved={() => void loadCandidates()} onForceReparse={(revisionId) => { setResumeReview(null); void forceReparse(revisionId); }} />}
+      {resumeReview && <ResumeReviewDrawer key={resumeReview.revision_id} api={api} initialReview={resumeReview} onClose={() => setResumeReview(null)} onApproved={() => void loadCandidates()} onForceReparse={forceReparse} />}
 
       {previewUrl && (
         <div className="preview-overlay" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }}>

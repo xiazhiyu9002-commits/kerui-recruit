@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any
@@ -12,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.backup.portable import PortableBackupService
+from kerui_recruit.backup.snapshot import REBUILD_MARKER
 from kerui_recruit.backup.service import BackupService, apply_pending_restore, finalize_pending_restore
 from kerui_recruit.bd_agent.agent import BdAgent
 from kerui_recruit.bd_agent.evidence import EvidenceExtractor
@@ -85,10 +87,19 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
         search_dir=settings.paths.search,
         backup_dir=settings.paths.backups,
     )
+    rebuild_marker = settings.paths.root / REBUILD_MARKER
+    rebuild_required = rebuild_marker.exists()
+    if rebuild_required and settings.paths.search.exists():
+        # Only remove the managed projection, before any index handle is open.
+        search = settings.paths.search.resolve()
+        if search != settings.paths.root.resolve() / "search":
+            raise ValueError("搜索目录指向数据目录之外，无法安全重建")
+        shutil.rmtree(search)
+        search.mkdir()
     engine = create_engine_for(settings.paths.database)
     migrate(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    if restore_report is not None:
+    if restore_report is not None or rebuild_required:
         from kerui_recruit.db.models import Candidate, Jd, TaskRecord
         from kerui_recruit.search.sync import enqueue_sync
         with factory() as restore_session, restore_session.begin():
@@ -102,7 +113,9 @@ def build_runtime(settings: Settings) -> RuntimeComponents:
                 task.status = "QUEUED"
                 task.lease_owner = None
                 task.lease_expires_at = None
-        finalize_pending_restore(restore_report)
+        if restore_report is not None:
+            finalize_pending_restore(restore_report)
+        rebuild_marker.unlink(missing_ok=True)
     from kerui_recruit.cases.state import reconcile_legacy_workflow_state
     reconcile_legacy_workflow_state(factory)
     blob_store = BlobStore(settings.paths.blobs, settings.paths.temp)

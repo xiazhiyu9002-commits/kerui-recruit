@@ -35,6 +35,57 @@ impl RuntimeConfig {
 /// The running sidecar process, kept so it can be terminated on application exit.
 pub struct SidecarProcess(Mutex<Option<Child>>);
 
+impl SidecarProcess {
+    fn ensure_ready(&self, check: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        let result = check();
+        if result.is_err() {
+            if let Some(mut child) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                terminate_sidecar(&mut child);
+            }
+        }
+        result
+    }
+}
+
+impl Drop for SidecarProcess {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            terminate_sidecar(&mut child);
+        }
+    }
+}
+
+struct ActiveDataRoot(PathBuf);
+
+fn validated_document_path(root: &std::path::Path, path: &std::path::Path) -> Result<PathBuf, String> {
+    let managed = root.join("temp/open-documents").canonicalize().map_err(|e| e.to_string())?;
+    let target = path.canonicalize().map_err(|e| e.to_string())?;
+    let extension = target.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !target.starts_with(managed) || !target.is_file() || !matches!(extension.as_str(), "doc" | "docx") {
+        return Err("仅允许打开受管理的 Word 简历副本".to_string());
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+fn open_document(path: String, root: State<'_, ActiveDataRoot>) -> Result<(), String> {
+    let target = validated_document_path(&root.0, std::path::Path::new(&path))?;
+    open::that(target).map_err(|e| e.to_string())
+}
+
+fn configure_sidecar_command(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+}
+
 fn allocate_runtime() -> io::Result<(u16, String)> {
     Ok((allocate_loopback_port()?, generate_session_token()))
 }
@@ -197,6 +248,7 @@ fn wait_until_ready(config: &RuntimeConfig, timeout: Duration) -> io::Result<()>
         let ready = tauri::async_runtime::block_on(async {
             reqwest::Client::new()
                 .get(&url)
+                .timeout(Duration::from_secs(1))
                 .send()
                 .await
                 .map(|response| response.status().is_success())
@@ -217,14 +269,18 @@ fn wait_until_ready(config: &RuntimeConfig, timeout: Duration) -> io::Result<()>
 ///
 /// PyInstaller one-file executables fork a child interpreter, so killing only
 /// the bootloader leaves the real server process orphaned. Use `taskkill /T`
-/// on Windows; on other platforms the bootloader forwards shutdown itself.
+/// on Windows and a dedicated process group on Unix, then reap the bootloader.
 fn terminate_sidecar(child: &mut Child) {
     #[cfg(target_os = "windows")]
     {
         let pid = child.id();
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut command = Command::new("taskkill");
+        configure_sidecar_command(&mut command);
+        let _ = command.args(["/PID", &pid.to_string(), "/T", "/F"]).output();
+    }
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).output();
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -321,12 +377,15 @@ pub fn run() {
         .setup(|app| {
             let config = RuntimeConfig::allocate()?;
             let sidecar = resolve_sidecar_binary(app.handle());
+            let data_root = resolve_data_root();
             let arguments = sidecar_arguments(
                 parse_port(&config.api_base_url)?,
                 config.session_token.clone(),
-                resolve_data_root(),
+                data_root.clone(),
             );
-            let child = Command::new(&sidecar)
+            let mut command = Command::new(&sidecar);
+            configure_sidecar_command(&mut command);
+            let child = command
                 .args(&arguments)
                 .spawn()
                 .map_err(|error| {
@@ -335,14 +394,15 @@ pub fn run() {
                         format!("failed to start sidecar {}: {error}", sidecar.display()),
                     )
                 })?;
-            wait_until_ready(&config, Duration::from_secs(15))?;
-
-            app.manage(SidecarProcess(Mutex::new(Some(child))));
+            let process = SidecarProcess(Mutex::new(Some(child)));
+            process.ensure_ready(|| wait_until_ready(&config, Duration::from_secs(15)))?;
+            app.manage(process);
+            app.manage(ActiveDataRoot(data_root));
             app.manage(config);
             create_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root, open_external, save_file, restart_app])
+        .invoke_handler(tauri::generate_handler![runtime_config, set_data_root, open_external, open_document, save_file, restart_app])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the window minimizes to the system tray instead of
@@ -380,6 +440,38 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{sidecar_arguments, sidecar_candidates, validate_data_root, RuntimeConfig};
+
+    #[test]
+    fn document_open_accepts_only_managed_word_files() {
+        let root = std::env::temp_dir().join(super::generate_session_token());
+        let managed = root.join("temp/open-documents");
+        std::fs::create_dir_all(&managed).unwrap();
+        let word = managed.join("resume.DOCX");
+        std::fs::write(&word, b"fake document").unwrap();
+        assert!(super::validated_document_path(&root, &word).is_ok());
+        let other = root.join("original.docx");
+        std::fs::write(&other, b"canonical").unwrap();
+        assert!(super::validated_document_path(&root, &other).is_err());
+        let pdf = managed.join("resume.pdf");
+        std::fs::write(&pdf, b"pdf").unwrap();
+        assert!(super::validated_document_path(&root, &pdf).is_err());
+        assert!(super::validated_document_path(&root, &managed).is_err());
+        assert!(super::validated_document_path(&root, &managed.join("missing.doc")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_readiness_terminates_and_reaps_owned_child() {
+        #[cfg(windows)]
+        let mut command = { let mut c = std::process::Command::new("powershell.exe"); c.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]); c };
+        #[cfg(unix)]
+        let mut command = { let mut c = std::process::Command::new("sleep"); c.arg("60"); c };
+        super::configure_sidecar_command(&mut command);
+        let process = super::SidecarProcess(std::sync::Mutex::new(Some(command.spawn().unwrap())));
+        let result = process.ensure_ready(|| Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "fake readiness")));
+        assert!(result.is_err());
+        assert!(process.0.lock().unwrap().is_none());
+    }
 
     #[test]
     fn runtime_config_uses_loopback_and_a_256_bit_launch_token() {

@@ -77,7 +77,7 @@ def test_portable_backup_encrypts_and_round_trips(
     assert report.ok is True
     assert report.files_restored == report.files_verified
     assert (target / "blobs" / "a.bin").read_bytes() == b"hello"
-    assert (target / "search" / "index.bin").read_bytes() == b"world"
+    assert not (target / "search" / "index.bin").exists()
     assert (target / "config" / "settings.json").read_text() == "{}"
     assert (target / "db" / "recruit.sqlite3").exists()
     assert list(tmp_path.glob(".target.staging-*")) == []
@@ -234,3 +234,66 @@ def test_is_same_volume_detects_same_directory(tmp_path: Path) -> None:
 
 def test_is_same_volume_handles_non_existent_target(tmp_path: Path) -> None:
     assert is_same_volume(tmp_path / "current", tmp_path / "does" / "not" / "exist") is True
+
+@pytest.mark.parametrize('kind', ['same', 'ancestor', 'child', 'unrelated', 'root'])
+def test_restore_rejects_unsafe_target_before_reading_backup(tmp_path, current_root, kind):
+    target = {'same': current_root, 'ancestor': tmp_path, 'child': current_root / 'child',
+              'unrelated': tmp_path / 'unrelated', 'root': Path(current_root.anchor)}[kind]
+    if kind == 'unrelated':
+        target.mkdir()
+        (target / 'sentinel').write_bytes(b'keep')
+    service = PortableBackupService(current_root=current_root)
+    with pytest.raises(PortableRestoreError) as error:
+        service.restore(tmp_path / 'missing.krbackup', target, PASSPHRASE)
+    assert error.value.code == 'E_BACKUP_INVALID_TARGET'
+    if kind == 'unrelated':
+        assert (target / 'sentinel').read_bytes() == b'keep'
+
+
+def test_new_backup_streams_without_whole_file_reads(tmp_path, current_root, monkeypatch):
+    _seed(current_root)
+    (current_root / 'blobs' / 'large.bin').write_bytes(os.urandom(3 * 1024 * 1024))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('whole file read')
+    monkeypatch.setattr(Path, 'read_bytes', forbidden)
+    service = PortableBackupService(current_root=current_root)
+    backup = service.create(tmp_path / 'backup', PASSPHRASE)
+    service.restore(backup, tmp_path / 'target', PASSPHRASE)
+    assert (tmp_path / 'target' / '.search-rebuild-required').exists()
+
+
+def test_legacy_fernet_archive_still_restores_and_rebuilds_indexes(tmp_path, current_root):
+    _seed(current_root)
+    entries = {p.relative_to(current_root).as_posix(): p.read_bytes() for p in current_root.rglob('*') if p.is_file()}
+    entries['manifest.json'] = json.dumps({'files': {name: hashlib.sha256(data).hexdigest() for name, data in entries.items()}}).encode()
+    backup = _encrypt_zip(tmp_path, PASSPHRASE, entries)
+    target = tmp_path / 'legacy-restored'
+    report = PortableBackupService(current_root=current_root).restore(backup, target, PASSPHRASE)
+    assert report.ok
+    assert (target / 'blobs/a.bin').read_bytes() == b'hello'
+    assert not (target / 'search').exists()
+    assert (target / '.search-rebuild-required').exists()
+
+
+def test_valid_manifest_without_database_is_not_a_restorable_talent_library(tmp_path, current_root):
+    data = b'hello'
+    backup = _encrypt_zip(tmp_path, PASSPHRASE, {
+        'blobs/a.bin': data,
+        'manifest.json': json.dumps({'files': {'blobs/a.bin': hashlib.sha256(data).hexdigest()}}).encode(),
+    })
+    with pytest.raises(PortableRestoreError, match='数据库'):
+        PortableBackupService(current_root=current_root).restore(backup, tmp_path / 'target', PASSPHRASE)
+
+
+def test_promotion_never_deletes_a_file_arriving_after_target_validation(tmp_path):
+    target = tmp_path / 'target'
+    target.mkdir()
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    (staging / 'new').write_bytes(b'backup content')
+    # The target was empty when restore validated it; another writer wins now.
+    (target / 'sentinel').write_bytes(b'keep unrelated data')
+    with pytest.raises(PortableRestoreError):
+        PortableBackupService._promote(staging, target)
+    assert (target / 'sentinel').read_bytes() == b'keep unrelated data'
+

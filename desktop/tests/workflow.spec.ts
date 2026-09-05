@@ -42,7 +42,7 @@ test("runs the health check and exposes index synchronization", async ({ page })
   await page.goto("/");
   await page.getByText("设置").click();
   await page.getByRole("button", { name: "运行检测" }).click();
-  await expect(page.getByText("数据库")).toBeVisible();
+  await expect(page.getByText("数据库", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "索引同步" })).toBeVisible();
   await expect(page.getByText(/等待同步 \d+ 项，失败 \d+ 项/)).toBeVisible();
 });

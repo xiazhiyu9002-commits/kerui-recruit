@@ -62,7 +62,8 @@ def test_migrate_to_copies_and_verifies(
     assert report.files_copied == report.files_verified
     assert report.files_copied > 0
     assert (target / "blobs" / "a.bin").read_bytes() == b"hello"
-    assert (target / "search" / "index.bin").read_bytes() == b"world"
+    assert not (target / "search" / "index.bin").exists()
+    assert (target / ".search-rebuild-required").exists()
     assert (target / "config" / "settings.json").read_text() == "{}"
     # staging 目录在成功后已提升为 target，不应残留
     assert list(tmp_path.glob(".target.staging-*")) == []
@@ -181,3 +182,28 @@ def test_migrate_to_verify_failure_leaves_source_and_target_unchanged(
     assert not target.exists()
     assert _snapshot(current_root) == before
     assert list(tmp_path.glob(".target.staging-*")) == []
+
+
+def test_migration_uses_frozen_database_while_live_source_changes(tmp_path, current_root, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+    factory = _seed_source(current_root)
+    service = MigrationService(session_factory=factory, current_root=current_root)
+    original = MigrationService._copy_essential_dirs
+
+    def write_during_copy(self, snapshot, staging):
+        with factory() as session, session.begin():
+            session.add(Candidate(display_name="Concurrent import"))
+        original(self, snapshot, staging)
+
+    monkeypatch.setattr(MigrationService, "_copy_essential_dirs", write_during_copy)
+    target = tmp_path / "migrated"
+    result = service.migrate_to(str(target))
+    assert result.ok and result.candidate_count == 1
+    with closing(sqlite3.connect(target / "db" / "recruit.sqlite3")) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT COUNT(*) FROM candidate").fetchone() == (1,)
+    with factory() as session:
+        assert session.query(Candidate).count() == 2
+    assert not (target / "db" / "recruit.sqlite3-wal").exists()
+
