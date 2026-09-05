@@ -1007,6 +1007,13 @@ export class ApiClient implements RecruitmentApi {
     );
   }
 
+  sendFollowupTest() {
+    return this.request<{ sent: boolean; to: string; message: string }>(
+      "/api/settings/mail/send-followup-test",
+      { method: "POST" }
+    );
+  }
+
   syncMail() {
     return this.request<{ ingested: number; revision_ids: string[] }>(
       "/api/settings/mail/sync",

@@ -193,3 +193,27 @@ def send_mail_confirmation(request: Request) -> dict:
         return {"sent": True, "to": smtp["to"], "message": "确认邮件已发送"}
     except Exception as error:
         raise ApiError(502, "E_MAIL_SEND_FAILED", f"确认邮件发送失败：{error}")
+
+
+@router.post("/mail/send-followup-test")
+def send_followup_test(request: Request) -> dict:
+    """立即发送一封「每日待跟进候选人」测试邮件（绕过定时与去重门槛）。"""
+    services: AppServices = request.app.state.services
+    scheduler = services.scheduler_service
+    if scheduler is None or scheduler.daily_followup_service is None:
+        raise ApiError(503, "E_MAIL_UNAVAILABLE", "每日待跟进报告未启用或 SMTP 未配置")
+    from datetime import datetime
+
+    from kerui_recruit.daily_followup.service import SHANGHAI
+
+    service = scheduler.daily_followup_service
+    now_sh = datetime.now(SHANGHAI).replace(tzinfo=None)
+    data = service.gather(now_sh)
+    body = service._build_email(data)
+    if body is None:
+        return {"sent": False, "to": service.to, "message": "当前没有待跟进的候选人，未发送"}
+    try:
+        service.mail_sender.send(to=service.to, subject="每日待跟进候选人", body=body)
+        return {"sent": True, "to": service.to, "message": "测试报告已发送"}
+    except Exception as error:
+        raise ApiError(502, "E_MAIL_SEND_FAILED", f"测试报告发送失败：{error}")

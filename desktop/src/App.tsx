@@ -84,16 +84,15 @@ function exportSvgAsPng(svg: SVGSVGElement, filename: string) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
     URL.revokeObjectURL(url);
-    canvas.toBlob((blob) => {
+    canvas.toBlob(async (blob) => {
       if (!blob) return;
-      const downloadUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = downloadUrl;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      try {
+        const buffer = await blob.arrayBuffer();
+        const content = Array.from(new Uint8Array(buffer));
+        await invoke("save_file", { filename, content });
+      } catch (error) {
+        console.warn("导出图片失败", error);
+      }
     }, "image/png");
   };
   image.onerror = () => URL.revokeObjectURL(url);
@@ -879,6 +878,7 @@ export interface RecruitmentApi {
   updateSettings(values: Partial<AppSettings>): Promise<AppSettings>;
   testMail(): Promise<{ imap: { ok: boolean; message: string }; smtp: { ok: boolean; message: string } }>;
   sendMailConfirmation(): Promise<{ sent: boolean; to: string; message: string }>;
+  sendFollowupTest(): Promise<{ sent: boolean; to: string; message: string }>;
   syncMail(): Promise<{ ingested: number; revision_ids: string[] }>;
   mailStatus(): Promise<{ configured: boolean; last_uid: number }>;
   getDirectionTaxonomy(): Promise<DirectionTaxonomy>;
@@ -1017,13 +1017,6 @@ function taskLabel(task: TaskStatus): string {
   return `解析中 ${task.progress}%`;
 }
 
-function jdAiLabel(category: string | null): string {
-  if (category === "CORE_AI") return "AI";
-  if (category === "AI_RELATED") return "AI相关";
-  if (category === "NON_AI") return "非AI";
-  return "—";
-}
-
 function jdRequirementLabel(parsed: JdParsedData | null): string {
   if (!parsed) return "—";
   const tech = parsed.tech_direction?.join("、") || "";
@@ -1133,6 +1126,13 @@ function patchSearchItem(item: CandidateSearchItem, field: string, value: unknow
   if (field === "highest_degree") next.highest_degree = (value as string) || null;
   if (field === "location") next.location = (value as string) || null;
   return next;
+}
+
+function parseYears(value: string): number | null {
+  const text = value.trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
 }
 
 function EditableCell({
@@ -1758,7 +1758,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     return (
       <table className="candidate-table">
         <thead>
-          <tr><th>姓名</th><th>学历</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>主方向</th><th className="candidate-actions-col">操作</th></tr>
+          <tr><th>姓名</th><th>学历</th><th>工作年限</th><th>电话</th><th>行业</th><th>技术方向</th><th>业务方向</th><th>主方向</th><th className="candidate-actions-col">操作</th></tr>
         </thead>
         <tbody>
           {rows.map((r) => {
@@ -1768,11 +1768,13 @@ export function App({ api }: { api: RecruitmentApi }) {
               : "—";
             const techValue = p?.tech_direction?.join("、") || "";
             const bizValue = p?.business_direction?.join("、") || "";
+            const yearsText = p?.total_years != null ? String(p.total_years) : "";
             return (
               <Fragment key={r.key}>
                 <tr>
                   <td><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></td>
                   <td><EditableCell value={degreeLabel(p?.highest_degree) || "—"} onSave={(next) => updateCandidateFieldValue(r.candidateId, "highest_degree", next.trim() || null)} /></td>
+                  <td><EditableCell value={yearsText} onSave={(next) => updateCandidateFieldValue(r.candidateId, "total_years", parseYears(next))} /></td>
                   <td><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></td>
                   <td>{industry}</td>
                   <td><EditableCell value={techValue} onSave={(next) => updateCandidateFieldValue(r.candidateId, "tech_direction", splitList(next))} /></td>
@@ -1794,7 +1796,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     {p?.experiences && p.experiences.length > 0 && (
                       <div className="candidate-line">
                         <small>工作履历</small>
@@ -1831,11 +1833,13 @@ export function App({ api }: { api: RecruitmentApi }) {
           const longestIndustry = p?.longest_industry || "—";
           const techValue = p?.tech_direction?.join("、") || "";
           const bizValue = p?.business_direction?.join("、") || "";
+          const yearsText = p?.total_years != null ? String(p.total_years) : "";
           return (
             <div key={r.key} className="virtual-row">
               <div className="virtual-row-main">
                 <div className="v-col v-name"><strong><EditableCell value={r.name} onSave={(next) => updateCandidateFieldValue(r.candidateId, "name", next.trim() || null)} /></strong></div>
                 <div className="v-col v-edu"><EditableCell value={degreeLabel(p?.highest_degree) || "—"} onSave={(next) => updateCandidateFieldValue(r.candidateId, "highest_degree", next.trim() || null)} /></div>
+                <div className="v-col v-years"><EditableCell value={yearsText} onSave={(next) => updateCandidateFieldValue(r.candidateId, "total_years", parseYears(next))} /></div>
                 <div className="v-col v-phone"><EditableCell value={r.phone ?? ""} onSave={(next) => updateCandidateFieldValue(r.candidateId, "phone", next.trim() || null)} /></div>
                 <div className="v-col v-recent">{recentIndustry}</div>
                 <div className="v-col v-longest">{longestIndustry}</div>
@@ -2831,6 +2835,17 @@ export function App({ api }: { api: RecruitmentApi }) {
       setMailStatus(await api.mailStatus());
     } catch {
       setMailStatus(null);
+    }
+  }
+
+  async function sendFollowupTest() {
+    setError(null);
+    setMailMessage("");
+    try {
+      const result = await api.sendFollowupTest();
+      setMailMessage(result.message);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "测试报告发送失败");
     }
   }
 
@@ -3961,6 +3976,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 <button type="button" className="detail-button" onClick={() => void testMailConfig()}>连接测试</button>
                 <button type="button" className="detail-button" onClick={() => void syncMailNow()}>立即同步</button>
                 <button type="button" className="detail-button" onClick={() => void loadMailStatus()}>刷新同步状态</button>
+                <button type="button" className="detail-button" onClick={() => void sendFollowupTest()}>发送测试报告</button>
               </div>
               {mailTestResult && (
                 <div className="health-grid">
@@ -4112,7 +4128,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       </main>
 
       {jdDirectionRevisionId && (
-        <div className="match-drawer-backdrop" onClick={() => setJdDirectionRevisionId(null)}>
+        <div className="match-drawer-backdrop" style={{ zIndex: 1200 }} onClick={() => setJdDirectionRevisionId(null)}>
           <aside className="match-drawer" role="dialog" aria-modal="true" aria-label="编辑岗位方向" onClick={(e) => e.stopPropagation()}>
             <div className="match-drawer-header">
               <div><h2>编辑岗位方向</h2><small>{jdDirectionRevisionId}</small></div>
@@ -4126,7 +4142,7 @@ export function App({ api }: { api: RecruitmentApi }) {
       )}
 
       {candidateDirectionRevisionId && (
-        <div className="match-drawer-backdrop" onClick={() => setCandidateDirectionRevisionId(null)}>
+        <div className="match-drawer-backdrop" style={{ zIndex: 1200 }} onClick={() => setCandidateDirectionRevisionId(null)}>
           <aside className="match-drawer" role="dialog" aria-modal="true" aria-label="编辑候选人方向" onClick={(e) => e.stopPropagation()}>
             <div className="match-drawer-header">
               <div><h2>编辑候选人方向</h2><small>{candidateDirectionRevisionId}</small></div>
@@ -4222,7 +4238,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 </table>
               ) : (
                 <table className="drawer-table">
-                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>AI/非AI</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
+                  <thead><tr><th>岗位名称</th><th>公司名称</th><th>状态</th><th>岗位要求（技术+业务）</th><th>操作</th></tr></thead>
                   <tbody>
                     {matchDrawer.items.map((item) => {
                       const status = matchDrawer.statuses[item.result_id] ?? "未处理";
@@ -4232,7 +4248,6 @@ export function App({ api }: { api: RecruitmentApi }) {
                             <td><strong>{item.title}</strong></td>
                             <td>{item.company}</td>
                             <td>{JD_STATUS_OPTIONS.find((o) => o.value === item.jd_status)?.label ?? item.jd_status}</td>
-                            <td>{jdAiLabel(item.ai_category)}</td>
                             <td>{jdRequirementLabel(item.parsed_data)}</td>
                             <td>
                               <div className="case-actions">
@@ -4242,7 +4257,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                             </td>
                           </tr>
                           {item.source_text && (
-                            <tr><td colSpan={6}><pre className="jd-source-text">{item.source_text}</pre></td></tr>
+                            <tr><td colSpan={5}><pre className="jd-source-text">{item.source_text}</pre></td></tr>
                           )}
                         </Fragment>
                       );
