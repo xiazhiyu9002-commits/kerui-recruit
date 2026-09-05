@@ -215,7 +215,7 @@ describe("recruitment consistency through the App", () => {
     const api = fakeApi();
     let approved = false;
     api.listCandidates = async () => [{ candidate_id: "candidate-1", revision_id: "revision-1", display_name: "已确认姓名", total_years: 5, highest_degree: null, location: null, status: "ACTIVE", revision_status: approved ? "READY" : "FAILED", phone: null, original_filename: "resume.pdf", parsed_data: { name: "已确认姓名", skills: ["Python"] } }];
-    const review = { revision_id: "revision-1", status: "FAILED", review_required: true, raw_text: "原始简历正文", parsed_data: { name: "已确认姓名", skills: ["Python"] }, review_data: { name: "机器姓名", skills: ["Java"], summary: "需要核实" }, manual_overrides: { name: "已确认姓名" }, extraction_diagnostics: { pages: [{ page_index: 0, reason: "low_text", route: "ocr", valid_char_count: 12 }], last_error: "OCR 不可用" }, error_code: "E_PENDING_REVIEW", error_message: "资料不足，请复核" };
+    const review = { candidate_id: "candidate-1", revision_id: "revision-1", status: "FAILED", review_required: true, raw_text: "原始简历正文", parsed_data: { name: "已确认姓名", skills: ["Python"] }, review_data: { name: "机器姓名", skills: ["Java"], summary: "需要核实" }, manual_overrides: { name: "已确认姓名" }, extraction_diagnostics: { pages: [{ page_index: 0, reason: "low_text", route: "ocr", valid_char_count: 12 }], last_error: "OCR 不可用" }, error_code: "E_PENDING_REVIEW", error_message: "资料不足，请复核" };
     api.getResumeReview = async () => structuredClone(review);
     let attempts = 0;
     const submissions: Record<string, unknown>[] = [];
@@ -426,6 +426,7 @@ function fakeApi(): RecruitmentApi {
     lookupPool: async () => [],
     testMail: async () => ({ imap: { ok: true, message: "ok" }, smtp: { ok: true, message: "ok" } }),
     sendMailConfirmation: async () => ({ sent: true, to: "a@b.com", message: "确认邮件已发送" }),
+    sendFollowupTest: async () => ({ sent: true, to: "a@b.com", message: "测试报告已发送" }),
     syncMail: async () => ({ ingested: 0, revision_ids: [] }),
     mailStatus: async () => ({ configured: false, last_uid: 0 }),
     reviseOrgImport: async (draft) => draft,
@@ -445,8 +446,8 @@ function fakeApi(): RecruitmentApi {
       parsed_data: null
     }),
     reparseResume: async (revisionId) => ({ revision_id: revisionId, task_id: "task-1" }),
-    getResumeReview: async (revisionId) => ({ revision_id: revisionId, status: "READY", review_required: false, raw_text: "", parsed_data: null, review_data: null, manual_overrides: {}, extraction_diagnostics: {}, error_code: null, error_message: null }),
-    approveResumeReview: async (revisionId, fields) => ({ revision_id: revisionId, status: "READY", review_required: false, raw_text: "", parsed_data: fields, review_data: null, manual_overrides: fields, extraction_diagnostics: {}, error_code: null, error_message: null }),
+    getResumeReview: async (revisionId) => ({ candidate_id: "candidate-1", revision_id: revisionId, status: "READY", review_required: false, raw_text: "", parsed_data: null, review_data: null, manual_overrides: {}, extraction_diagnostics: {}, error_code: null, error_message: null }),
+    approveResumeReview: async (revisionId, fields) => ({ candidate_id: "candidate-1", revision_id: revisionId, status: "READY", review_required: false, raw_text: "", parsed_data: fields, review_data: null, manual_overrides: fields, extraction_diagnostics: {}, error_code: null, error_message: null }),
     indexStatus: async () => ({ pending: 0, failed: 0, items: [] }),
     retryIndexSync: async () => ({ pending: 0, failed: 0, items: [] }),
     searchCandidates: async () => ({
@@ -905,7 +906,7 @@ describe("desktop recruitment workflow", () => {
     const machine: DirectionProfile = { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "CONFIDENT", role_families: [{ code: "BACKEND", label: "后端开发", confidence: 0.9, source: "LLM", evidence: [], is_primary: true }], leadership: null, business_domains: [], specialties: [] };
     const manual: DirectionProfile = { taxonomy_version: "career-direction-v1", classifier_version: "direction-classifier-v1", status: "CONFIDENT", role_families: [{ code: "AI_ML", label: "算法", confidence: 1.0, source: "USER", evidence: [], is_primary: true }], leadership: null, business_domains: [], specialties: [] };
     api.listCandidates = async () => [{ candidate_id: "candidate-1", revision_id: "revision-1", display_name: "张三", total_years: 5, highest_degree: null, location: null, status: "ACTIVE", revision_status: "FAILED", phone: null, original_filename: "resume.pdf", parsed_data: null }];
-    api.getResumeReview = async () => ({ revision_id: "revision-1", status: "FAILED", review_required: true, raw_text: "正文", parsed_data: null, review_data: { name: "机器姓名" }, manual_overrides: { name: "已确认姓名" }, extraction_diagnostics: {}, error_code: "E_PENDING_REVIEW", error_message: "请复核" });
+    api.getResumeReview = async () => ({ candidate_id: "candidate-1", revision_id: "revision-1", status: "FAILED", review_required: true, raw_text: "正文", parsed_data: null, review_data: { name: "机器姓名" }, manual_overrides: { name: "已确认姓名" }, extraction_diagnostics: {}, error_code: "E_PENDING_REVIEW", error_message: "请复核" });
     api.getResumeDirectionProfile = async () => ({ direction_profile: manual, effective_profile: manual, machine_profile: machine, manual_profile: manual, profile_version: "v1", latest_active_correction_id: "correction-1", has_manual_override: true });
     let reevaluated = 0;
     api.reevaluateResumeDirection = async () => { reevaluated += 1; return { machine_profile: machine, manual_profile: manual, effective_profile: manual, profile_version: "v1" }; };

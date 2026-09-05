@@ -3,7 +3,7 @@ import { expect, test, vi } from "vitest";
 import { ResumeReviewDrawer } from "../src/resumes/ResumeReviewDrawer";
 import type { RecruitmentApi, ResumeReview } from "../src/App";
 vi.mock("../src/resumes/DirectionEditor", () => ({ DirectionEditor: () => null }));
-const initial: ResumeReview = { revision_id: "r", status: "PENDING_REVIEW", review_required: true, raw_text: "old text", parsed_data: null, review_data: { name: "old" }, manual_overrides: {}, extraction_diagnostics: {}, error_code: null, error_message: null };
+const initial: ResumeReview = { candidate_id: "c", revision_id: "r", status: "PENDING_REVIEW", review_required: true, raw_text: "old text", parsed_data: null, review_data: { name: "old" }, manual_overrides: {}, extraction_diagnostics: {}, error_code: null, error_message: null };
 
 test("protects unsaved fields when closing the review", () => {
   const close = vi.fn();
