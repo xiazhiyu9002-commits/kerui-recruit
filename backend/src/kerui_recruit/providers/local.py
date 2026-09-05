@@ -104,12 +104,18 @@ class LocalResumeParser:
         skills = [
             item for item in self.skill_terms if item.casefold() in compact.casefold()
         ]
+        gender = None
+        if "女" in compact:
+            gender = "女"
+        elif "男" in compact:
+            gender = "男"
         first_line = next((line.strip() for line in text.splitlines() if line.strip()), "待识别")
         return ParsedResume(
             name=first_line[:80],
             total_years=total_years,
             highest_degree=degree,
             location=location,
+            gender=gender,
             industry=industry,
             skills=skills,
             summary=compact[:1_000],

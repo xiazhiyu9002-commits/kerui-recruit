@@ -19,6 +19,18 @@ def _clean(value: str | None) -> str | None:
     return cleaned or None
 
 
+def normalize_gender(value: str | None) -> str | None:
+    """把性别统一为 男 / 女，兼容「男性/女士/先生」等常见写法。"""
+    cleaned = _clean(value)
+    if cleaned is None:
+        return None
+    if cleaned.casefold() in {"男", "男性", "男生", "先生", "male", "m"}:
+        return "男"
+    if cleaned.casefold() in {"女", "女性", "女生", "女士", "female", "f"}:
+        return "女"
+    return cleaned
+
+
 def _join_value(value: str | list[str] | None) -> str | None:
     if value is None:
         return None
@@ -75,6 +87,7 @@ def normalize_resume(parsed: ParsedResume) -> NormalizedResume:
         graduation_year=parsed.graduation_year,
         birth_year=parsed.birth_year,
         age=age,
+        gender=normalize_gender(parsed.gender),
         industry=_clean(parsed.industry),
         current_industry=_clean(parsed.current_industry),
         longest_industry=_clean(parsed.longest_industry),

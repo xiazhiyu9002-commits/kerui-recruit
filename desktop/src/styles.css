@@ -297,6 +297,13 @@ td small { color: #8b978f; margin-top: 5px; }
 .preview-header span { font-size: 14px; color: #1e3027; font-weight: 600; }
 .preview-header .detail-button { background: #eef2ef; border-radius: 8px; padding: 6px 14px; }
 .preview-frame { flex: 1; border: 0; width: 100%; }
+.create-case-picker-body { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.create-case-picker-body > p { color: #6b7a72; font-size: 13px; }
+.jd-pick-item { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid #e6ede8; border-radius: 10px; background: #f7faf8; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.jd-pick-item:hover:not(:disabled) { border-color: #2f7d54; background: #eef6f1; }
+.jd-pick-item:disabled { opacity: 0.5; cursor: not-allowed; }
+.jd-pick-item strong { font-size: 14px; color: #1e3027; }
+.jd-pick-item span { font-size: 12px; color: #6b7a72; }
 
 .match-drawer-backdrop { position: fixed; inset: 0; background: rgba(15, 28, 21, 0.4); z-index: 1100; display: flex; justify-content: flex-end; }
 .match-drawer { background: #fff; width: calc(100% - 240px); height: 100%; display: flex; flex-direction: column; box-shadow: -16px 0 48px rgba(0, 0, 0, 0.18); }
@@ -311,8 +318,15 @@ td small { color: #8b978f; margin-top: 5px; }
 .match-status { color: #1e6849; font-weight: 700; font-size: 13px; }
 .search-filters { margin-top: 10px; border: 1px solid #dfe7e1; border-radius: 10px; padding: 8px 10px; }
 .search-filters summary { cursor: pointer; font-weight: 650; color: #42564a; }
-.search-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
-.search-filter-grid label { display: grid; gap: 4px; color: #647268; font-size: 12px; }
+.search-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px 14px; margin: 12px 0 14px; }
+.search-filter-grid label { display: grid; gap: 5px; color: #647268; font-size: 12px; font-weight: 600; }
+.search-filter-grid input,
+.search-filter-grid select { width: 100%; border: 1px solid #dfe7e1; border-radius: 8px; padding: 8px 10px; background: #fbfcfb; font: inherit; font-size: 13px; color: #1f2e27; outline: none; transition: border-color .15s, box-shadow .15s; }
+.search-filter-grid input::placeholder { color: #a3ada6; }
+.search-filter-grid input:hover,
+.search-filter-grid select:hover { border-color: #b9cec2; }
+.search-filter-grid input:focus,
+.search-filter-grid select:focus { border-color: #1e6849; box-shadow: 0 0 0 3px rgba(30, 104, 73, .12); background: #fff; }
 
 /* 统一加载组件 */
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -1px; margin-right: 6px; animation: spinner-rotate 0.7s linear infinite; }
@@ -408,10 +422,15 @@ td small { color: #8b978f; margin-top: 5px; }
 .review-notice--error { color: #b3261e; background: #fdf0ee; border-color: #f5c9c5; }
 .review-notice--ok { color: #1e6849; background: #eef6f0; border-color: #cde6d6; }
 
-/* 候选人表格操作列：主操作靠左，强制OCR/复核详情靠右 */
-.row-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; width: 100%; justify-content: space-between; }
+/* 候选人表格操作列：第一行主操作，第二行强制OCR/复核详情 */
+.table-scroll { overflow-x: auto; }
+.row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; white-space: nowrap; }
 .row-actions__group { display: inline-flex; align-items: center; gap: 4px; }
-.row-actions__group--right { margin-left: auto; }
-.candidate-actions-col { min-width: 340px; }
+.row-actions__group--right { margin-left: 0; }
+.candidate-actions-col { min-width: 360px; width: 360px; text-align: right; }
+.candidate-table th:nth-child(4), .candidate-table td:nth-child(4) { min-width: 130px; }
+.candidate-table th:nth-child(5), .candidate-table td:nth-child(5) { min-width: 150px; }
+.candidate-table th:nth-child(6), .candidate-table td:nth-child(6) { min-width: 150px; }
+.candidate-table th:nth-child(7), .candidate-table td:nth-child(7) { min-width: 120px; }
 
 

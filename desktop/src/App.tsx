@@ -21,6 +21,26 @@ import type {
 } from "./resumes/direction-types";
 
 
+const DEGRADED_REASON_LABELS: Record<string, string> = {
+  TIMEOUT: "检索超时",
+  SEARCH_UNAVAILABLE: "检索服务不可用",
+  EMBEDDING_UNAVAILABLE: "语义向量模型无法调用，已降级为关键词匹配",
+  VECTOR_UNAVAILABLE: "向量检索不可用",
+  FTS_UNAVAILABLE: "关键词检索不可用",
+  RERANKER_UNAVAILABLE: "重排模型无法调用，结果排序可能不够精准",
+  EXCLUSION_UNVERIFIED: "排除技能未能完全校验",
+  INDEX_SYNC_PENDING: "部分候选人索引尚未同步",
+  LIVE_VALIDATION_UNAVAILABLE: "实时校验暂不可用",
+};
+
+function describeDegraded(reasons: string[]): string {
+  const labels = reasons
+    .map((reason) => DEGRADED_REASON_LABELS[reason] ?? reason)
+    .filter(Boolean);
+  return labels.length > 0 ? labels.join("、") : reasons.join("、");
+}
+
+
 async function openExternal(url: string) {
   try {
     await invoke("open_external", { url });
@@ -140,6 +160,8 @@ export interface CandidateSearchFilters {
   degree_exact?: boolean; locations?: string[]; preferred_locations?: string[];
   candidate_status?: string; max_qs_rank?: number; school_level?: string;
   exclude_skills?: string[];
+  phone?: string;
+  gender?: string;
   primary_role_family?: string;
   role_families?: string[];
   business_domains?: string[];
@@ -218,6 +240,7 @@ export interface ParsedResumeData {
   graduation_year?: number | null;
   birth_year?: number | null;
   age?: number | null;
+  gender?: string | null;
   industry?: string | null;
   current_industry?: string | null;
   longest_industry?: string | null;
@@ -1292,6 +1315,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [searchFilterDraft, setSearchFilterDraft] = useState({
     minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "",
     schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "",
+    phone: "", gender: "",
   });
   const [directions, setDirections] = useState<SearchDirectionTaxonomy | null>(null);
   const [tasks, setTasks] = useState<TaskStatus[]>([]);
@@ -1320,6 +1344,7 @@ export function App({ api }: { api: RecruitmentApi }) {
   const [matchCaseIds, setMatchCaseIds] = useState<Record<string, string>>({});
   const [creatingCase, setCreatingCase] = useState(false);
   const creatingCaseRef = useRef(false);
+  const [createCasePicker, setCreateCasePicker] = useState<{ candidateId: string; name: string } | null>(null);
 
   // 设置 / 健康
   const [health, setHealth] = useState<Record<string, { status: string; message?: string }> | null>(null);
@@ -1437,6 +1462,8 @@ export function App({ api }: { api: RecruitmentApi }) {
       if (searchFilterDraft.schoolLevel.trim()) filters.school_level = searchFilterDraft.schoolLevel.trim();
       if (searchFilterDraft.maxQsRank !== "") filters.max_qs_rank = Number(searchFilterDraft.maxQsRank);
       if (searchFilterDraft.excludeSkills.trim()) filters.exclude_skills = splitList(searchFilterDraft.excludeSkills);
+      if (searchFilterDraft.phone.trim()) filters.phone = searchFilterDraft.phone.trim();
+      if (searchFilterDraft.gender) filters.gender = searchFilterDraft.gender;
       if (searchFilterDraft.direction) filters.primary_role_family = searchFilterDraft.direction;
       if (searchFilterDraft.businessDomains.trim()) filters.business_domains = splitList(searchFilterDraft.businessDomains);
       const response = await api.searchCandidates(query.trim(), filters);
@@ -1448,7 +1475,7 @@ export function App({ api }: { api: RecruitmentApi }) {
         setError("检索服务暂不可用，请稍后重试。");
       }
       if (response.degraded_reasons.length > 0) {
-        setNotice(`部分检索能力降级：${response.degraded_reasons.join("、")}`);
+        setNotice(`部分检索能力已降级：${describeDegraded(response.degraded_reasons)}`);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "搜索失败，请稍后重试");
@@ -1519,7 +1546,7 @@ export function App({ api }: { api: RecruitmentApi }) {
     setQuery("");
     setResults([]);
     setHasSearched(false);
-    setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "" });
+    setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "", phone: "", gender: "" });
     void loadCandidates(1);
   }
 
@@ -1638,6 +1665,30 @@ export function App({ api }: { api: RecruitmentApi }) {
     }
   }
 
+  function openCreateCasePicker(candidateId: string, name: string) {
+    setError(null);
+    setCreateCasePicker({ candidateId, name });
+    void loadJds();
+  }
+
+  async function confirmCreateCase(jdId: string) {
+    const picker = createCasePicker;
+    if (!picker || creatingCaseRef.current) return;
+    creatingCaseRef.current = true;
+    setCreatingCase(true);
+    setError(null);
+    try {
+      const created = await api.createCase(picker.candidateId, jdId);
+      setCreateCasePicker(null);
+      await openCaseDrawer(created.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "创建流程失败");
+    } finally {
+      creatingCaseRef.current = false;
+      setCreatingCase(false);
+    }
+  }
+
   async function openCaseDrawer(caseId: string) {
     setError(null);
     try {
@@ -1732,6 +1783,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                         <button className="detail-button" onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
                         <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
                         <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
+                        <button className="detail-button" onClick={() => openCreateCasePicker(r.candidateId, r.name)}>建流程</button>
                       </span>
                       <span className="row-actions__group row-actions__group--right">
                         <button className="detail-button" onClick={() => void forceReparse(r.revisionId).catch(() => {})}>强制OCR</button>
@@ -1790,6 +1842,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <button className="detail-button" disabled={!!r.revisionStatus && r.revisionStatus !== "READY"} onClick={() => void runCandidateMatch(r.candidateId, r.name)}>匹配</button>
                   <button className="detail-button" onClick={() => void previewResumeFile(r.revisionId, r.name, r.filename)}>查看详情</button>
                   <button className="detail-button" onClick={() => void downloadResumeFile(r.revisionId, r.filename || r.name)}>下载</button>
+                  <button className="detail-button" onClick={() => openCreateCasePicker(r.candidateId, r.name)}>建流程</button>
                 </div>
               </div>
               <div className="virtual-row-sub">
@@ -3033,8 +3086,8 @@ export function App({ api }: { api: RecruitmentApi }) {
           </button>
           <div><h1>{navigation[activeNav]}</h1><p>结构化管理与智能匹配候选人</p></div>
           <div className="shortcut-hints" aria-label="系统快捷键">
-            <span><kbd>Ctrl K</kbd>搜索</span>
-            <span><kbd>Ctrl 1-{navigation.length}</kbd>切换</span>
+            <span><kbd>Ctrl/⌘ K</kbd>搜索</span>
+            <span><kbd>Ctrl/⌘ 1-{navigation.length}</kbd>切换</span>
             <span><kbd>Esc</kbd>取消</span>
           </div>
           {activeNav === 0 && (
@@ -3064,7 +3117,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                   placeholder="搜索人才、技能、公司或自然语言"
                   aria-label="人才搜索"
                 />
-                <kbd>Ctrl K</kbd>
+                <kbd>Ctrl/⌘ K</kbd>
                 <button disabled={searching} type="submit">{searching ? "搜索中" : "搜索"}</button>
               </form>
               <details className="search-filters">
@@ -3080,13 +3133,19 @@ export function App({ api }: { api: RecruitmentApi }) {
                   <label>学校等级<input aria-label="学校等级" placeholder="985 / 211" value={searchFilterDraft.schoolLevel} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, schoolLevel: e.target.value })} /></label>
                   <label>QS最高排名<input aria-label="QS最高排名" type="number" min="1" value={searchFilterDraft.maxQsRank} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, maxQsRank: e.target.value })} /></label>
                   <label>排除技能<input aria-label="排除技能" placeholder="外包、PHP" value={searchFilterDraft.excludeSkills} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, excludeSkills: e.target.value })} /></label>
+                  <label>手机号<input aria-label="手机号" placeholder="完整手机号" value={searchFilterDraft.phone} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, phone: e.target.value })} /></label>
+                  <label>性别<select aria-label="性别" value={searchFilterDraft.gender} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, gender: e.target.value })}>
+                    <option value="">全部</option>
+                    <option value="男">男</option>
+                    <option value="女">女</option>
+                  </select></label>
                   <label>主方向<select aria-label="主方向" value={searchFilterDraft.direction} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, direction: e.target.value })}>
                     <option value="">全部方向</option>
                     {(directions?.role_families ?? []).map((rf) => <option key={rf.code} value={rf.code}>{rf.label}</option>)}
                   </select></label>
                   <label>业务领域<input aria-label="业务领域" placeholder="支付、金融/银行" value={searchFilterDraft.businessDomains} onChange={(e) => setSearchFilterDraft({ ...searchFilterDraft, businessDomains: e.target.value })} /></label>
                 </div>
-                <button type="button" className="detail-button" onClick={() => setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "" })}>清除筛选</button>
+                <button type="button" className="detail-button" onClick={() => setSearchFilterDraft({ minYears: "", maxYears: "", degree: "", locations: "", preferredLocations: "", schoolLevel: "", maxQsRank: "", excludeSkills: "", direction: "", businessDomains: "", phone: "", gender: "" })}>清除筛选</button>
               </details>
               <form className="folder-import" onSubmit={(event) => void importFolderPath(event)}>
                 <input value={folderPath} onChange={(e) => setFolderPath(e.target.value)} placeholder="导入文件夹路径，如 D:\简历库" aria-label="文件夹路径" />
@@ -3123,7 +3182,7 @@ export function App({ api }: { api: RecruitmentApi }) {
                 {results.length === 0 ? (
                   <div className="empty-state"><strong>{hasSearched ? "没有符合条件的候选人" : "从一次搜索开始"}</strong><p>{hasSearched ? "可调整搜索词或筛选条件后重试。" : "输入技能、经历或自然语言条件查找人才，或点击「显示候选人」查看已导入人才。"}</p></div>
                 ) : (
-                  resultsTable
+                  <div className="table-scroll">{resultsTable}</div>
                 )}
                 {candidates.length > 0 && (
                   <>
@@ -3399,7 +3458,7 @@ export function App({ api }: { api: RecruitmentApi }) {
         {activeNav === 3 && (
           <section className="jd-panel">
             <div className="mapping-help">
-              <strong>操作：</strong>Tab 新增子节点（部门→子部门 · 人员→下属）· Enter 新增同级 · 「＋人员」在部门下加人 · 双击/F2 改名 · 拖拽调整层级 · Shift 返回上级 · ←/→ 同级切换 · Space 折叠 · Ctrl+Z 撤销
+              <strong>操作：</strong>Tab 新增子节点（部门→子部门 · 人员→下属）· Enter 新增同级 · 「＋人员」在部门下加人 · 双击/F2 改名 · 拖拽调整层级 · Shift 返回上级 · ←/→ 同级切换 · Space 折叠 · Ctrl/⌘+Z 撤销 · Ctrl/⌘+滚轮缩放
             </div>
 
             <div className="mapping-toolbar">
@@ -4206,6 +4265,29 @@ export function App({ api }: { api: RecruitmentApi }) {
               <button className="detail-button" onClick={() => { URL.revokeObjectURL(previewUrl); setPreviewUrl(null); }}>关闭</button>
             </div>
             <iframe src={previewUrl} title={previewName} className="preview-frame" />
+          </div>
+        </div>
+      )}
+
+      {createCasePicker && (
+        <div className="preview-overlay" onClick={() => setCreateCasePicker(null)}>
+          <div className="preview-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="preview-header">
+              <span>为「{createCasePicker.name}」选择岗位创建流程</span>
+              <button className="detail-button" onClick={() => setCreateCasePicker(null)}>关闭</button>
+            </div>
+            <div className="create-case-picker-body">
+              {jds.filter((jd) => jd.jd_status === "OPEN").length === 0 ? (
+                <p>暂无「开放」状态的岗位，请先在 JD 管理中新增岗位。</p>
+              ) : (
+                jds.filter((jd) => jd.jd_status === "OPEN").map((jd) => (
+                  <button key={jd.jd_id} className="jd-pick-item" disabled={creatingCase} onClick={() => void confirmCreateCase(jd.jd_id)}>
+                    <strong>{jd.title}</strong>
+                    <span>{jd.company || "未填写公司"}{jd.location ? ` · ${jd.location}` : ""}</span>
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

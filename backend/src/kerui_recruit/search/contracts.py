@@ -66,6 +66,8 @@ class CandidateFilters:
     max_qs_rank: int | None = None
     school_level: str | None = None  # 语义：最低学校等级层级
     exclude_skills: tuple[str, ...] = ()  # 排除技能（召回后硬过滤）
+    phone: str | None = None  # 手机号（召回后按规范化指纹精确过滤）
+    gender: str | None = None  # 性别（召回后按 男/女 过滤）
     primary_role_family: str | None = None  # 主方向（单选）
     role_family_codes: tuple[str, ...] = ()  # 方向集合（多选，或关系）
     business_domain_codes: tuple[str, ...] = ()  # 业务领域（多选，或关系）

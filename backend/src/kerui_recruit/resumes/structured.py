@@ -32,6 +32,7 @@ class ParsedResume(BaseModel):
     qs_rank: int | None = Field(default=None, ge=1)
     graduation_year: int | None = Field(default=None, ge=1900, le=2100)
     birth_year: int | None = Field(default=None, ge=1950, le=2015)
+    gender: str | None = None
     industry: str | None = None
     current_industry: str | None = None
     longest_industry: str | None = None
@@ -76,6 +77,7 @@ class NormalizedResume(BaseModel):
     graduation_year: int | None = None
     birth_year: int | None = None
     age: int | None = None
+    gender: str | None = None
     industry: str | None = None
     current_industry: str | None = None
     longest_industry: str | None = None

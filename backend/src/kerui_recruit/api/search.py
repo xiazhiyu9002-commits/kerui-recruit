@@ -9,6 +9,8 @@ from sqlalchemy import select
 from kerui_recruit.api.services import AppServices
 from kerui_recruit.db.models import Candidate, CandidateContact, IndexSyncRecord, ResumeDocument, ResumeRevision
 from kerui_recruit.direction.taxonomy import BUSINESS_DOMAIN_LABELS, ROLE_FAMILIES
+from kerui_recruit.duplicates.service import normalize_phone
+from kerui_recruit.resumes.normalize import normalize_gender
 from kerui_recruit.search.contracts import CandidateFilters, resolve_search_status
 from kerui_recruit.search.degrees import normalize_degree
 from kerui_recruit.search.query import has_skill, parse_query
@@ -31,6 +33,8 @@ class CandidateFiltersRequest(BaseModel):
     max_qs_rank: int | None = Field(default=None, ge=1)
     school_level: str | None = None
     exclude_skills: list[str] = Field(default_factory=list)
+    phone: str | None = None
+    gender: str | None = None
     primary_role_family: str | None = None
     role_families: list[str] = Field(default_factory=list)
     business_domains: list[str] = Field(default_factory=list)
@@ -85,8 +89,13 @@ async def search_candidates(
     filters = _merge_filters(parsed.filters, command.filters)
     # Reserve a small part of the same budget for checking current SQLite facts.
     remaining = max(0., deadline - time.monotonic())
+    # 手机号/性别在召回之后按当前事实做精确二次校验；若只取前 limit 名，
+    # 命中对象可能根本不在前 limit 名内而被漏掉，因此扩大召回量。
+    recall_limit = command.limit
+    if filters.phone or filters.gender:
+        recall_limit = max(command.limit * 10, 200)
     page = await services.search_service.search(
-        parsed.keywords, filters, limit=command.limit,
+        parsed.keywords, filters, limit=recall_limit,
         deadline=deadline - min(.25, remaining * .1),
     )
     if not page.items:
@@ -101,6 +110,7 @@ async def search_candidates(
             items=[], degraded_reasons=list(page.degraded_reasons) + ["LIVE_VALIDATION_UNAVAILABLE"],
             empty_reason="service_error", status="service_error",
         )
+    items = items[:command.limit]
     degraded = list(dict.fromkeys((*page.degraded_reasons, *validation_reasons)))
     empty_reason = page.empty_reason if items else ("service_error" if degraded else "no_match")
     return CandidateSearchResponse(
@@ -174,6 +184,14 @@ def _hydrate_hits(services, hits, query, filters):
             encryption = services.encryption_service
             phone = (encryption.decrypt(contact.phone_encrypted)
                      if encryption and contact and contact.phone_encrypted else None)
+            if filters.phone:
+                normalized = normalize_phone(filters.phone)
+                if not normalized or not _phone_matches(phone, contact, normalized):
+                    continue
+            if filters.gender:
+                parsed_gender = normalize_gender((revision.parsed_data or {}).get("gender"))
+                if parsed_gender != normalize_gender(filters.gender):
+                    continue
             items.append(CandidateSearchItem(
                 candidate_id=candidate.id, revision_id=revision.id, name=candidate.display_name,
                 phone=phone, reasons=_build_reasons(query, hit), parsed_data=revision.parsed_data,
@@ -181,6 +199,15 @@ def _hydrate_hits(services, hits, query, filters):
                 total_years=hit.total_years, highest_degree=hit.highest_degree, location=hit.location,
                 qs_rank=hit.qs_rank, original_filename=revision.original_filename))
     return items, degraded
+
+
+def _phone_matches(phone: str | None, contact, normalized: str) -> bool:
+    """手机号精确匹配：规范化后必须完全一致。"""
+    if contact is not None and contact.phone_fingerprint and normalized == contact.phone_fingerprint:
+        return True
+    if phone and normalized == normalize_phone(phone):
+        return True
+    return False
 
 
 def _build_reasons(query: str, hit) -> list[str]:
