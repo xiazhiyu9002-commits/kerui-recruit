@@ -332,6 +332,7 @@ class ResumeReviewRequest(BaseModel):
 def _review_response(revision: ResumeRevision) -> dict:
     return {
         "revision_id": revision.id, "status": revision.status,
+        "candidate_id": revision.document.candidate_id,
         "review_required": revision.status != "READY",
         "raw_text": revision.raw_text,
         "parsed_data": revision.parsed_data, "review_data": revision.review_data,

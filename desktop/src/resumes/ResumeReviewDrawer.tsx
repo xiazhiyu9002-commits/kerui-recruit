@@ -24,6 +24,9 @@ export function ResumeReviewDrawer({ api, initialReview, onClose, onApproved, on
   const [reparsing, setReparsing] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [discardAction, setDiscardAction] = useState<"close" | "reparse" | null>(null);
+  const [gender, setGender] = useState(initialFields.gender ? String(initialFields.gender) : "");
+  const [savingGender, setSavingGender] = useState(false);
+  const [genderMessage, setGenderMessage] = useState<string | null>(null);
   async function forceReparse() {
     if (!onForceReparse || lock.current) return;
     if (dirty) { setDiscardAction("reparse"); return; }
@@ -64,6 +67,19 @@ export function ResumeReviewDrawer({ api, initialReview, onClose, onApproved, on
       setError(caught instanceof Error ? caught.message : "复核失败");
     } finally { lock.current = false; setBusy(false); }
   }
+  async function saveGender() {
+    if (lock.current) return;
+    lock.current = true;
+    setSavingGender(true);
+    setGenderMessage(null);
+    try {
+      await api.updateCandidateField(review.candidate_id, "gender", gender || null);
+      setFields((current) => ({ ...current, gender: gender || null }));
+      setGenderMessage("性别已保存");
+    } catch (caught) {
+      setGenderMessage(caught instanceof Error ? caught.message : "性别保存失败");
+    } finally { lock.current = false; setSavingGender(false); }
+  }
   const changeField = (key: string, value: unknown) => { setDirty(true); setFields((current) => ({ ...current, [key]: value })); };
   const close = () => { if (busy || reparsing) return; if (dirty) setDiscardAction("close"); else onClose(); };
   return <div className="match-drawer-backdrop" onClick={close}>
@@ -91,6 +107,15 @@ export function ResumeReviewDrawer({ api, initialReview, onClose, onApproved, on
             <label>学历<select aria-label="复核学历" value={String(fields.highest_degree || "")} onChange={(event) => changeField("highest_degree", event.target.value || null)}>
               {DEGREE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select></label>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 10, margin: "8px 0" }}>
+              <label style={{ flex: 1 }}>性别<select aria-label="复核性别" value={gender} onChange={(event) => setGender(event.target.value)}>
+                <option value="">未知</option>
+                <option value="男">男</option>
+                <option value="女">女</option>
+              </select></label>
+              <button type="button" className="detail-button" disabled={savingGender || busy || reparsing} onClick={() => void saveGender()}>{savingGender ? "保存中…" : "单独保存性别"}</button>
+              {genderMessage && <span style={{ color: genderMessage === "性别已保存" ? "#1e6849" : "#b3261e", fontSize: 12, whiteSpace: "nowrap" }}>{genderMessage}</span>}
+            </div>
             <label>工作年限<input aria-label="复核工作年限" type="number" min="0" step="0.1" value={String(fields.total_years ?? "")} onChange={(event) => changeField("total_years", event.target.value ? Number(event.target.value) : null)} /></label>
             <label>行业<input aria-label="复核行业" value={String(fields.current_industry || "")} onChange={(event) => changeField("current_industry", event.target.value)} /></label>
             <label>技能<input aria-label="复核技能" value={skillsText} onChange={(event) => { setSkillsText(event.target.value); changeField("skills", event.target.value.split(/[、,，]/).map((value) => value.trim()).filter(Boolean)); }} /></label>

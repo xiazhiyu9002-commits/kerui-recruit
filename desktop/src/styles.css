@@ -424,13 +424,14 @@ td small { color: #8b978f; margin-top: 5px; }
 
 /* 候选人表格操作列：第一行主操作，第二行强制OCR/复核详情 */
 .table-scroll { overflow-x: auto; }
-.row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; white-space: nowrap; }
-.row-actions__group { display: inline-flex; align-items: center; gap: 4px; }
+.row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.row-actions__group { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px 6px; white-space: nowrap; }
 .row-actions__group--right { margin-left: 0; }
-.candidate-actions-col { min-width: 360px; width: 360px; text-align: right; }
-.candidate-table th:nth-child(4), .candidate-table td:nth-child(4) { min-width: 130px; }
-.candidate-table th:nth-child(5), .candidate-table td:nth-child(5) { min-width: 150px; }
-.candidate-table th:nth-child(6), .candidate-table td:nth-child(6) { min-width: 150px; }
-.candidate-table th:nth-child(7), .candidate-table td:nth-child(7) { min-width: 120px; }
+.candidate-actions-col { min-width: 190px; text-align: right; }
+.candidate-table th:nth-child(4), .candidate-table td:nth-child(4) { min-width: 110px; }
+.candidate-table th:nth-child(5), .candidate-table td:nth-child(5) { min-width: 130px; }
+.candidate-table th:nth-child(6), .candidate-table td:nth-child(6) { min-width: 130px; }
+.candidate-table th:nth-child(7), .candidate-table td:nth-child(7) { min-width: 100px; }
+.candidate-table td { word-break: break-word; }
 
 

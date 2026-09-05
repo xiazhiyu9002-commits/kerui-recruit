@@ -60,8 +60,8 @@ class Settings(BaseModel):
     smtp_ssl: bool = True
     reminder_to: str | None = None
 
-    # 每日待跟进报告（整理推荐未反馈/明日面试/面试未反馈），默认关闭。
-    daily_followup_enabled: bool = False
+    # 每日待跟进报告（整理推荐未反馈/明日面试/面试未反馈），默认开启。
+    daily_followup_enabled: bool = True
 
     @property
     def paths(self) -> AppPaths:

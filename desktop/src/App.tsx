@@ -262,6 +262,7 @@ export interface IndexSyncStatus {
 
 export interface ResumeReview {
   revision_id: string;
+  candidate_id: string;
   status: string;
   review_required: boolean;
   raw_text: string | null;

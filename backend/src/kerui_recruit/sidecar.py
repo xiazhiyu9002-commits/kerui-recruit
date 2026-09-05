@@ -127,7 +127,7 @@ def build_settings(options: RuntimeArgs) -> Settings:
         smtp_auth_code=secret_value("smtp_auth_code", "SMTP_AUTH_CODE"),
         smtp_ssl=_bool_value(stored, "smtp_ssl", os.environ.get("SMTP_SSL"), True),
         reminder_to=value("reminder_to", "REMINDER_TO"),
-        daily_followup_enabled=_bool_value(stored, "daily_followup_enabled", os.environ.get("DAILY_FOLLOWUP_ENABLED"), False),
+        daily_followup_enabled=_bool_value(stored, "daily_followup_enabled", os.environ.get("DAILY_FOLLOWUP_ENABLED"), True),
     )
 
 
