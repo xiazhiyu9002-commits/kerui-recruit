@@ -2,11 +2,49 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { OrgTreeNode } from "../App";
 
 
-const NODE_W = 150;
+const NODE_MIN_W = 120;
 const NODE_H = 52;
 const HGAP = 24;
 const VGAP = 46;
 const MARGIN = 56;
+const NODE_PADDING_X = 10;
+const NODE_GAP = 6;
+
+let _measureCtx: CanvasRenderingContext2D | null = null;
+
+function measureText(text: string, weight: number, size: number): number {
+  if (!_measureCtx) {
+    _measureCtx = document.createElement("canvas").getContext("2d");
+  }
+  if (!_measureCtx) return text.length * size * 0.6;
+  _measureCtx.font = `${weight} ${size}px Inter, "PingFang SC", "Microsoft YaHei", sans-serif`;
+  return _measureCtx.measureText(text).width;
+}
+
+function nodeLabel(node: OrgTreeNode): { name: string; sub: string } {
+  const name = node.name + (node.is_key ? " ★" : "");
+  const sub =
+    node.kind === "department"
+      ? node.team_size != null
+        ? `${node.team_size} 人`
+        : ""
+      : [node.title, node.job_level].filter(Boolean).join(" · ");
+  return { name, sub };
+}
+
+function nodeWidth(node: OrgTreeNode): number {
+  const { name, sub } = nodeLabel(node);
+  const nameW = measureText(name, 700, 13);
+  const subW = sub ? measureText(sub, 400, 11) : 0;
+  const toggle = node.children.length > 0 ? NODE_GAP + 10 : 0;
+  return Math.max(NODE_MIN_W, Math.ceil(Math.max(nameW, subW) + toggle + NODE_PADDING_X * 2));
+}
+
+function collectNodes(node: OrgTreeNode, acc: OrgTreeNode[] = []): OrgTreeNode[] {
+  acc.push(node);
+  for (const child of node.children) collectNodes(child, acc);
+  return acc;
+}
 
 
 interface Position {
@@ -25,20 +63,22 @@ interface Layout {
 }
 
 
-function computeLayout(root: OrgTreeNode, collapsed: Set<string>): Layout {
+function computeLayout(root: OrgTreeNode, collapsed: Set<string>, widths: Map<string, number>): Layout {
   const positions = new Map<string, Position>();
   const edges: { from: Position; to: Position }[] = [];
   const nodes: OrgTreeNode[] = [];
   const parentOf = new Map<string, string>();
+
+  const nodeW = (node: OrgTreeNode) => widths.get(node.id) ?? NODE_MIN_W;
 
   const visibleChildren = (node: OrgTreeNode) =>
     collapsed.has(node.id) ? [] : node.children;
 
   const subtreeWidth = (node: OrgTreeNode): number => {
     const kids = visibleChildren(node);
-    if (kids.length === 0) return NODE_W;
+    if (kids.length === 0) return nodeW(node);
     return Math.max(
-      NODE_W,
+      nodeW(node),
       kids.reduce((sum, k) => sum + subtreeWidth(k), 0) + HGAP * (kids.length - 1)
     );
   };
@@ -119,10 +159,12 @@ export function OrgMindMap({
     zoomBy(event.deltaY < 0 ? 0.1 : -0.1);
   }
 
-  const layout = useMemo(
-    () => (tree ? computeLayout(tree, collapsed) : null),
-    [tree, collapsed]
-  );
+  const { layout, widths } = useMemo(() => {
+    if (!tree) return { layout: null, widths: new Map<string, number>() };
+    const widths = new Map<string, number>();
+    for (const n of collectNodes(tree)) widths.set(n.id, nodeWidth(n));
+    return { layout: computeLayout(tree, collapsed, widths), widths };
+  }, [tree, collapsed]);
 
   function selectedNode(): OrgTreeNode | null {
     if (!layout) return null;
@@ -262,6 +304,7 @@ export function OrgMindMap({
 
         {layout.nodes.map((node) => {
           const pos = layout.positions.get(node.id)!;
+          const w = widths.get(node.id) ?? NODE_MIN_W;
           const hasChildren = node.children.length > 0;
           const isCollapsed = collapsed.has(node.id);
           const isEditing = editingId === node.id;
@@ -277,7 +320,7 @@ export function OrgMindMap({
                 isSelected ? "is-selected" : "",
                 isRoot ? "is-root" : "",
               ].join(" ")}
-              style={{ left: pos.x - NODE_W / 2, top: pos.y - NODE_H / 2, width: NODE_W, height: NODE_H }}
+              style={{ left: pos.x - w / 2, top: pos.y - NODE_H / 2, width: w, height: NODE_H }}
               onClick={(e) => { e.stopPropagation(); onSelect(node); }}
               onDoubleClick={() => startRename(node)}
               draggable={node.kind !== "company"}

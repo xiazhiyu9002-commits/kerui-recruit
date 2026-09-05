@@ -91,27 +91,26 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
     """Render a department-only org tree as a single-page architecture chart.
 
     - Department nodes show ``名称-负责人`` (``名称-XXX`` when no leader).
-    - FangSong font, centered labels, and font/box sizes that adapt to the
-      number of departments.
+    - Each node box is sized to its own label, so long names never overflow.
     - The company root uses a light-blue box; each top-level department (and
       its sub-departments) uses one light colour family, distinct per department.
     """
     import pymupdf
     from datetime import datetime
 
-    # 扫描部门数量与最长标签，用于自适应字号/框大小。
+    # 收集所有节点 + 部门数量，用于自适应字号。
     dept_count = 0
-    max_chars = 4
+    all_nodes: list = []
 
-    def scan(node) -> None:
-        nonlocal dept_count, max_chars
+    def collect(node) -> None:
+        nonlocal dept_count
+        all_nodes.append(node)
         if node.kind == "department":
             dept_count += 1
-            max_chars = max(max_chars, len(f"{node.name}-{node.leader_name or 'XXX'}"))
         for child in node.children:
-            scan(child)
+            collect(child)
 
-    scan(root)
+    collect(root)
 
     if dept_count <= 5:
         base_font = 13.0
@@ -124,16 +123,50 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
     else:
         base_font = 9.0
 
-    node_w = max(110.0, base_font * max_chars * 1.15 + 16.0)
-    node_h = base_font * 4.4
+    # 提前加载字体，用于精确测量每个标签的实际渲染宽度。
+    font_name = "china-s"
+    font = None
+    fang_path = _fangsong_font_path()
+    if fang_path:
+        try:
+            font = pymupdf.Font(fontfile=fang_path)
+            font_name = "fangsong"
+        except Exception:
+            font = None
+            font_name = "china-s"
+
+    def text_width(text: str, size: float) -> float:
+        if font is not None:
+            return font.text_length(text, size)
+        return pymupdf.get_text_length(text, fontname="china-s", fontsize=size)
+
+    def label_of(node) -> str:
+        if node.kind == "department":
+            return f"{node.name}-{node.leader_name or 'XXX'}"
+        return node.name
+
+    # 每个节点框宽度 = 自身文字实际宽度 + 左右内边距（自适应，不溢出）。
+    pad_x = 12.0
+    node_w = {
+        node.id: max(88.0, text_width(label_of(node), base_font) + pad_x * 2)
+        for node in all_nodes
+    }
+    node_h = base_font * 3.4
     gap = base_font * 2.2
     level = base_font * 5.0
     margin = 56.0
 
+    horizontal = orientation == "horizontal"
+    max_node_w = max(node_w.values()) if node_w else 88.0
+
+    def node_width(node) -> float:
+        # 横向布局为兼容保留：统一按最大框宽排布，保证不溢出。
+        return max_node_w if horizontal else node_w[node.id]
+
     def subtree_span(node) -> float:
         if not node.children:
-            return node_w
-        return max(node_w, sum(subtree_span(c) for c in node.children) + gap * (len(node.children) - 1))
+            return node_width(node)
+        return max(node_width(node), sum(subtree_span(c) for c in node.children) + gap * (len(node.children) - 1))
 
     positions: dict[str, tuple[float, int]] = {}
     max_depth = 0
@@ -151,10 +184,9 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
 
     assign(root, 0, 0)
 
-    horizontal = orientation == "horizontal"
     span = subtree_span(root)
     if horizontal:
-        canvas_w = max_depth * (node_w + level) + node_w
+        canvas_w = max_depth * (max_node_w + level) + max_node_w
         canvas_h = span
     else:
         canvas_w = span
@@ -164,7 +196,7 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
     usable_w = page_w - 2 * margin
     usable_h = page_h - 2 * margin
     scale = min(1.0, usable_w / canvas_w, usable_h / canvas_h)
-    fontsize = max(6.0, base_font * scale)
+    fontsize = base_font * scale
 
     draw_w = canvas_w * scale
     draw_h = canvas_h * scale
@@ -174,7 +206,7 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
     def coord(node):
         center, depth = positions[node.id]
         if horizontal:
-            x = depth * (node_w + level) + node_w / 2
+            x = depth * (max_node_w + level) + max_node_w / 2
             y = center
         else:
             x = center
@@ -183,7 +215,7 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
 
     def node_rect(node):
         x, y = coord(node)
-        w = node_w * scale
+        w = node_width(node) * scale
         h = node_h * scale
         return pymupdf.Rect(x - w / 2, y - h / 2, x + w / 2, y + h / 2)
 
@@ -214,23 +246,13 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
     page = document.new_page(width=page_w, height=page_h)
     page.draw_rect(page.rect, color=None, fill=(0.985, 0.99, 0.987), width=0)
 
-    # 加载仿宋字体（不可用则回退到内置 CJK 字体）。
-    font_name = "china-s"
-    font = None
-    fang_path = _fangsong_font_path()
-    if fang_path:
+    # 注册字体到页面（供 insert_text 渲染使用）。
+    if fang_path and font is not None:
         try:
             page.insert_font(fontname="fangsong", fontfile=fang_path)
-            font = pymupdf.Font(fontfile=fang_path)
             font_name = "fangsong"
         except Exception:
-            font = None
             font_name = "china-s"
-
-    def text_width(text: str, size: float) -> float:
-        if font is not None:
-            return font.text_length(text, size)
-        return pymupdf.get_text_length(text, fontname="china-s", fontsize=size)
 
     edge = (0.72, 0.76, 0.73)
 
@@ -270,9 +292,7 @@ def export_arch_pdf(root, *, orientation: str = "vertical", watermark: str = "")
         fill, stroke, text_color = node_colors(node)
         page.draw_rect(rect, color=stroke, fill=fill, width=1)
 
-        label = node.name
-        if node.kind == "department":
-            label = f"{node.name}-{node.leader_name or 'XXX'}"
+        label = label_of(node)
 
         # 水平 + 垂直居中。
         tx = (rect.x0 + rect.x1) / 2 - text_width(label, fontsize) / 2

@@ -73,3 +73,20 @@ def test_export_arch_pdf_shows_leader_and_omits_metadata(service: OrgService) ->
     assert "市场部-XXX" in text
     assert "人" not in text  # 不显示部门人数
     assert "技术总监" not in text  # 不显示职位等其他信息
+
+
+def test_export_arch_pdf_fits_long_names(service: OrgService) -> None:
+    import pymupdf
+
+    company = service.create_company(name="北京字节跳动科技有限公司")
+    dept = service.create_department(company_id=company.id, name="战略与商业发展事业部")
+    leader = service.create_employee(company_id=company.id, department_id=dept.id, name="欧阳明轩", title="资深总监")
+    service.update_department(dept.id, leader_id=leader.id)
+
+    root = service.build_arch_tree(company.id)
+    payload = export_arch_pdf(root, orientation="vertical")
+    doc = pymupdf.open(stream=payload, filetype="pdf")
+    text = doc[0].get_text()
+
+    assert "北京字节跳动科技有限公司" in text
+    assert "战略与商业发展事业部-欧阳明轩" in text
